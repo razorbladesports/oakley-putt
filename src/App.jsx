@@ -71,82 +71,50 @@ const generateRoundId = () =>
 
 const sumOfArr = (arr) => arr.reduce((a, b) => a + (b || 0), 0);
 
-function computePlayerStats(profile) {
-  const empty = {
-    played: 0,
-    completed: 0,
-    best: null,
-    bestVs: null,
-    worst: null,
-    worstVs: null,
-    avg: null,
-  };
-  const out = {
-    totalRounds: profile.rounds.length,
-    aces: 0,
-    // overall (both courses) aggregates for the headline tiles
-    best: null,
-    bestVs: null,
-    worst: null,
-    worstVs: null,
-    avg: null,
-    completedRounds: 0,
-    byCourse: { black: { ...empty }, white: { ...empty } },
-  };
-  profile.rounds.forEach((r) => {
-    out.aces += r.scores.filter((s) => s === 1).length;
-    const c = out.byCourse[r.course];
-    if (!c) return;
-    c.played += 1;
-    if (r.complete) {
-      c.completed += 1;
-      if (c.best === null || r.total < c.best) {
-        c.best = r.total;
-        c.bestVs = r.vsPar;
+/* ---------- stats leaderboard helpers ---------- */
+const formatStatVs = (v) => (v > 0 ? `+${v}` : v === 0 ? "E" : `${v}`);
+
+// completed rounds for a profile matching the course filter ('all'|'black'|'white')
+function getFilteredRounds(profile, filter) {
+  return profile.rounds.filter(
+    (r) => r.complete && (filter === "all" || r.course === filter)
+  );
+}
+
+// one ranked row per player who has >=1 completed round for the filter
+function buildStatsLeaderboard(playerStats, filter) {
+  const rows = [];
+  Object.keys(playerStats).forEach((name) => {
+    const rounds = getFilteredRounds(playerStats[name], filter);
+    if (!rounds.length) return;
+    let bestR = rounds[0];
+    rounds.forEach((r) => {
+      if (r.total < bestR.total || (r.total === bestR.total && r.vsPar < bestR.vsPar)) {
+        bestR = r;
       }
-      if (c.worst === null || r.total > c.worst) {
-        c.worst = r.total;
-        c.worstVs = r.vsPar;
-      }
-    }
-  });
-  ["black", "white"].forEach((k) => {
-    const c = out.byCourse[k];
-    const completedRounds = profile.rounds.filter(
-      (r) => r.course === k && r.complete
-    );
-    if (completedRounds.length) {
-      c.avg =
-        Math.round(
-          (completedRounds.reduce((a, r) => a + r.total, 0) /
-            completedRounds.length) *
-            10
-        ) / 10;
-    }
-  });
-  // overall aggregates use vs-par so Black and White compare fairly
-  const allCompleted = profile.rounds.filter((r) => r.complete);
-  out.completedRounds = allCompleted.length;
-  if (allCompleted.length) {
-    let bestR = allCompleted[0];
-    let worstR = allCompleted[0];
-    allCompleted.forEach((r) => {
-      if (r.vsPar < bestR.vsPar) bestR = r;
-      if (r.vsPar > worstR.vsPar) worstR = r;
     });
-    out.best = bestR.total;
-    out.bestVs = bestR.vsPar;
-    out.bestCourse = bestR.course;
-    out.worst = worstR.total;
-    out.worstVs = worstR.vsPar;
-    out.worstCourse = worstR.course;
-    out.avg =
-      Math.round(
-        (allCompleted.reduce((a, r) => a + r.vsPar, 0) / allCompleted.length) *
-          10
-      ) / 10;
-  }
-  return out;
+    const avg = Math.round((rounds.reduce((a, r) => a + r.total, 0) / rounds.length) * 10) / 10;
+    const avgVs = Math.round((rounds.reduce((a, r) => a + r.vsPar, 0) / rounds.length) * 10) / 10;
+    const aces = rounds.reduce((a, r) => a + r.scores.filter((s) => s === 1).length, 0);
+    rows.push({
+      name,
+      best: bestR.total,
+      bestVs: bestR.vsPar,
+      avg,
+      avgVs,
+      rounds: rounds.length,
+      aces,
+    });
+  });
+  rows.sort(
+    (a, b) =>
+      a.best - b.best ||
+      a.bestVs - b.bestVs ||
+      a.avg - b.avg ||
+      b.rounds - a.rounds ||
+      a.name.localeCompare(b.name)
+  );
+  return rows;
 }
 
 /* ============================================================
@@ -161,6 +129,13 @@ export default function App() {
   const [currentHole, setCurrentHole] = useState(0);
   const [roundId, setRoundId] = useState(null);
   const [activePlayer, setActivePlayer] = useState(null); // who we're scoring now
+  const advanceTimer = useRef(null);
+  const clearAdvanceTimer = () => {
+    if (advanceTimer.current) {
+      clearTimeout(advanceTimer.current);
+      advanceTimer.current = null;
+    }
+  };
 
   // persistent stats
   const [playerStats, setPlayerStats] = useState({});
@@ -384,6 +359,7 @@ export default function App() {
     players.find((p) => (scores[p] || [])[holeIdx] == null) || players[0] || null;
 
   const setScore = (name, value) => {
+    clearAdvanceTimer();
     const prev = (scores[name] || [])[currentHole];
     const erasing = prev === value;
     setScores((s) => {
@@ -391,30 +367,45 @@ export default function App() {
       arr[currentHole] = arr[currentHole] === value ? null : value; // re-tap erases
       return { ...s, [name]: arr };
     });
-    // auto-advance to the next player who still needs a score on this hole
-    if (!erasing) {
-      const idx = players.indexOf(name);
-      let nextP = null;
-      for (let i = 1; i <= players.length; i++) {
-        const cand = players[(idx + i) % players.length];
-        if (cand === name) continue;
-        if ((scores[cand] || [])[currentHole] == null) {
-          nextP = cand;
-          break;
-        }
+    if (erasing) return;
+    // find the next player (after this one) who still needs a score
+    const idx = players.indexOf(name);
+    let nextP = null;
+    for (let i = 1; i <= players.length; i++) {
+      const cand = players[(idx + i) % players.length];
+      if (cand === name) continue;
+      if ((scores[cand] || [])[currentHole] == null) {
+        nextP = cand;
+        break;
       }
-      if (nextP) setActivePlayer(nextP); // else stay put — hole is complete
+    }
+    if (nextP) {
+      setActivePlayer(nextP);
+    } else if (prev == null && currentHole < 17) {
+      // this entry just completed the hole -> auto-advance after a beat
+      const target = currentHole + 1;
+      advanceTimer.current = setTimeout(() => {
+        advanceTimer.current = null;
+        setPendingAdvance(null);
+        setCurrentHole(target);
+        setActivePlayer(firstUnscoredOnHole(target));
+      }, 650);
     }
   };
 
-  const selectActivePlayer = (name) => setActivePlayer(name);
+  const selectActivePlayer = (name) => {
+    clearAdvanceTimer();
+    setActivePlayer(name);
+  };
 
   const jumpToHole = (h) => {
+    clearAdvanceTimer();
     setCurrentHole(h);
     setActivePlayer(firstUnscoredOnHole(h));
     setPendingAdvance(null);
   };
   const prevHole = () => {
+    clearAdvanceTimer();
     setPendingAdvance(null);
     const h = Math.max(0, currentHole - 1);
     setCurrentHole(h);
@@ -422,6 +413,7 @@ export default function App() {
   };
 
   const goNext = () => {
+    clearAdvanceTimer();
     setPendingAdvance(null);
     if (currentHole >= 17) setView("finished");
     else {
@@ -439,6 +431,7 @@ export default function App() {
   };
 
   const exitToHome = () => {
+    clearAdvanceTimer();
     setLeaderboardOpen(false);
     setPendingAdvance(null);
     setView("home");
@@ -912,7 +905,7 @@ function ScoringView({
       {/* compact sticky header */}
       <header className="score-head">
         <div className="score-head-row">
-          <button className="linkbtn" onClick={onHome}>
+          <button className="home-link" onClick={onHome}>
             ← HOME
           </button>
           <span className="course-pill font-mono">{course.label}</span>
@@ -1238,193 +1231,272 @@ function StatsView({
   onDeletePlayer,
   onDeleteAll,
 }) {
-  // rank by best round (vs par); players with no completed rounds go last
-  const enriched = Object.keys(playerStats).map((n) => ({
-    name: n,
-    s: computePlayerStats(playerStats[n]),
-  }));
-  enriched.sort((a, b) => {
-    const aHas = a.s.completedRounds > 0;
-    const bHas = b.s.completedRounds > 0;
-    if (aHas && bHas) return a.s.bestVs - b.s.bestVs;
-    if (aHas) return -1;
-    if (bHas) return 1;
-    return b.s.totalRounds - a.s.totalRounds;
-  });
-  const totalRounds = enriched.reduce((a, e) => a + e.s.totalRounds, 0);
-  const totalAces = enriched.reduce((a, e) => a + e.s.aces, 0);
+  const [courseFilter, setCourseFilter] = useState("all");
+  const [manageOpen, setManageOpen] = useState(false);
 
-  const fmtVs = (v) => (v > 0 ? `+${v}` : v === 0 ? "E" : `${v}`);
-  const courseName = (id) => (id === "black" ? "Black" : "White");
+  const allNames = Object.keys(playerStats);
+  const board = buildStatsLeaderboard(playerStats, courseFilter);
+
+  const totalPlayers = board.length;
+  const totalRounds = board.reduce((a, r) => a + r.rounds, 0);
+  const totalAces = board.reduce((a, r) => a + r.aces, 0);
+
+  const filterLabel =
+    courseFilter === "black"
+      ? "BLACK COURSE"
+      : courseFilter === "white"
+      ? "WHITE COURSE"
+      : "ALL COURSES";
+  const filterWord =
+    courseFilter === "black"
+      ? "Black Course "
+      : courseFilter === "white"
+      ? "White Course "
+      : "";
+
+  const podium = board.slice(0, 3);
+  const medalClass = (i) =>
+    i === 0 ? "medal-1" : i === 1 ? "medal-2" : i === 2 ? "medal-3" : "";
+  const medalGlyph = (i) =>
+    i === 0 ? "🥇" : i === 1 ? "🥈" : i === 2 ? "🥉" : `#${i + 1}`;
+
+  const aceKings = board
+    .filter((r) => r.aces > 0)
+    .slice()
+    .sort((a, b) => b.aces - a.aces || a.best - b.best);
+  const mostRounds = board
+    .slice()
+    .sort((a, b) => b.rounds - a.rounds || a.best - b.best);
 
   return (
     <div className="screen">
       <header className="topbar">
-        <button className="linkbtn" onClick={onBack}>
+        <button className="home-link" onClick={onBack}>
           ← HOME
         </button>
-        <span className="topbar-title font-display">RECORDS</span>
         <span className="topbar-spacer" />
       </header>
 
       <div className="scroll pad">
-        {enriched.length === 0 ? (
-          <div className="empty">
-            <p className="empty-title font-display">NO RECORDS YET</p>
+        <div className="stats-hero">
+          <h1 className="stats-title font-display">LOCAL LEADERBOARD</h1>
+          <p className="stats-sub">🔒 Saved only on this phone</p>
+        </div>
+
+        {allNames.length === 0 ? (
+          <div className="empty board-empty">
+            <p className="empty-title font-display">NO LOCAL SCORES YET</p>
             <p className="empty-sub">
-              Finish a round and everyone shows up here — best rounds, averages,
-              worst days, and hole-in-ones. Bragging rights included.
+              Finish a round and this phone starts building its leaderboard.
             </p>
           </div>
         ) : (
           <>
-            <p className="records-intro">
-              <b>{enriched.length}</b> player
-              {enriched.length === 1 ? "" : "s"} · <b>{totalRounds}</b> round
-              {totalRounds === 1 ? "" : "s"} · <b>{totalAces}</b> hole-in-one
-              {totalAces === 1 ? "" : "s"} so far.
-            </p>
-            <p className="privacy-note tight">
-              🔒 All of this lives only on this phone.
-            </p>
+            <div className="segmented">
+              {[
+                ["all", "ALL"],
+                ["black", "BLACK"],
+                ["white", "WHITE"],
+              ].map(([id, label]) => (
+                <button
+                  key={id}
+                  className={`segmented-btn ${
+                    courseFilter === id ? "seg-active" : ""
+                  }`}
+                  onClick={() => setCourseFilter(id)}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
 
-            {enriched.map((e, i) => {
-              const { name: n, s } = e;
-              const confirming = confirmingDelete === n;
-              const ranked = s.completedRounds > 0;
-              const rank = ranked ? i + 1 : null;
-              return (
-                <section key={n} className="rec-card">
-                  <div className="rec-head">
-                    <div className="rec-id">
-                      {rank && (
-                        <span
-                          className={`rec-rank font-display ${
-                            rank === 1 ? "rec-rank-1" : ""
-                          }`}
-                        >
-                          {rank === 1 ? "👑" : `#${rank}`}
+            {board.length === 0 ? (
+              <div className="empty board-empty">
+                <p className="empty-title font-display">
+                  NO {filterLabel} SCORES YET
+                </p>
+                <p className="empty-sub">
+                  Finish a {filterWord}round to unlock this leaderboard.
+                </p>
+              </div>
+            ) : (
+              <>
+                <div className="score-strip">
+                  <div className="strip-cell">
+                    <span className="strip-num font-display">
+                      {totalPlayers}
+                    </span>
+                    <span className="strip-lbl">PLAYERS</span>
+                  </div>
+                  <span className="strip-div" />
+                  <div className="strip-cell">
+                    <span className="strip-num font-display">
+                      {totalRounds}
+                    </span>
+                    <span className="strip-lbl">ROUNDS</span>
+                  </div>
+                  <span className="strip-div" />
+                  <div className="strip-cell">
+                    <span className="strip-num font-display">{totalAces}</span>
+                    <span className="strip-lbl">ACES</span>
+                  </div>
+                </div>
+
+                {podium.length > 1 && (
+                  <div className="podium">
+                    {podium.map((r, i) => (
+                      <div key={r.name} className={`podium-card ${medalClass(i)}`}>
+                        <span className="podium-medal">{medalGlyph(i)}</span>
+                        <span className="podium-name">{r.name}</span>
+                        <span className="podium-best font-display">
+                          {r.best}
                         </span>
-                      )}
-                      <span className="rec-name font-display">{n}</span>
+                        <span
+                          className="podium-vs font-mono"
+                          style={{ color: vsColor(r.bestVs) }}
+                        >
+                          {formatStatVs(r.bestVs)}
+                        </span>
+                        <span className="podium-rounds font-mono">
+                          {r.rounds} RD{r.rounds === 1 ? "" : "S"}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                <p className="board-heading font-mono">BEST SCORES · {filterLabel}</p>
+                <div className="leaderboard-list">
+                  {board.map((r, i) => (
+                    <div
+                      key={r.name}
+                      className={`leaderboard-row ${i === 0 ? "lb-first" : ""}`}
+                    >
+                      <span className={`rank-medal font-display ${medalClass(i)}`}>
+                        {i < 3 ? medalGlyph(i) : `#${i + 1}`}
+                      </span>
+                      <div className="lb-main">
+                        <div className="lb-line1">
+                          <span className="lb-player">{r.name}</span>
+                          <span className="lb-scorewrap">
+                            <span className="lb-best font-mono">{r.best}</span>
+                            <span
+                              className="stat-pill font-mono"
+                              style={{ color: vsColor(r.bestVs) }}
+                            >
+                              {formatStatVs(r.bestVs)}
+                            </span>
+                          </span>
+                        </div>
+                        <div className="lb-line2 font-mono">
+                          AVG {r.avg} · {r.rounds} ROUND
+                          {r.rounds === 1 ? "" : "S"} · {r.aces} ACE
+                          {r.aces === 1 ? "" : "S"}
+                        </div>
+                      </div>
                     </div>
-                    {!confirming ? (
+                  ))}
+                </div>
+
+                <div className="mini-boards">
+                  <div className="mini-board">
+                    <p className="mini-title font-display">ACE KINGS 🕳️</p>
+                    {aceKings.length ? (
+                      aceKings.map((r) => (
+                        <div key={r.name} className="mini-row">
+                          <span className="mini-name">{r.name}</span>
+                          <span className="mini-val font-mono">
+                            {r.aces}
+                            <span className="mini-unit">
+                              {" "}
+                              ace{r.aces === 1 ? "" : "s"}
+                            </span>
+                          </span>
+                        </div>
+                      ))
+                    ) : (
+                      <p className="mini-empty">No aces yet — be the first.</p>
+                    )}
+                  </div>
+
+                  <div className="mini-board">
+                    <p className="mini-title font-display">MOST ROUNDS 🔁</p>
+                    {mostRounds.map((r) => (
+                      <div key={r.name} className="mini-row">
+                        <span className="mini-name">{r.name}</span>
+                        <span className="mini-val font-mono">
+                          {r.rounds}
+                          <span className="mini-unit"> · avg {r.avg}</span>
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </>
+            )}
+
+            <div className="manage-data">
+              <button
+                className="manage-toggle"
+                onClick={() => setManageOpen((o) => !o)}
+              >
+                Manage local data {manageOpen ? "▲" : "▼"}
+              </button>
+              {manageOpen && (
+                <div className="manage-body">
+                  {allNames.map((n) => {
+                    const confirming = confirmingDelete === n;
+                    return (
+                      <div key={n} className="manage-row">
+                        <span className="manage-name">{n}</span>
+                        {!confirming ? (
+                          <button
+                            className="manage-del"
+                            onClick={() => setConfirmingDelete(n)}
+                          >
+                            Delete
+                          </button>
+                        ) : (
+                          <span className="inline-confirm">
+                            <button
+                              className="btn btn-ghost sm"
+                              onClick={() => setConfirmingDelete(null)}
+                            >
+                              Cancel
+                            </button>
+                            <button
+                              className="btn btn-danger sm"
+                              onClick={() => onDeletePlayer(n)}
+                            >
+                              Delete
+                            </button>
+                          </span>
+                        )}
+                      </div>
+                    );
+                  })}
+                  <div className="manage-all">
+                    {confirmingDelete !== "all" ? (
                       <button
-                        className="remove-x"
-                        onClick={() => setConfirmingDelete(n)}
-                        aria-label={`Delete ${n}`}
+                        className="btn btn-ghost sm"
+                        onClick={() => setConfirmingDelete("all")}
                       >
-                        ×
+                        Delete all local data
                       </button>
                     ) : (
-                      <span className="inline-confirm">
+                      <div className="confirm-row">
                         <button
                           className="btn btn-ghost sm"
                           onClick={() => setConfirmingDelete(null)}
                         >
                           Cancel
                         </button>
-                        <button
-                          className="btn btn-danger sm"
-                          onClick={() => onDeletePlayer(n)}
-                        >
-                          Delete
+                        <button className="btn btn-danger sm" onClick={onDeleteAll}>
+                          Delete everything
                         </button>
-                      </span>
+                      </div>
                     )}
                   </div>
-                  <p className="rec-sub">
-                    {s.totalRounds} round{s.totalRounds === 1 ? "" : "s"} played
-                    {ranked ? ` · ${s.completedRounds} completed` : ""}
-                  </p>
-
-                  {ranked ? (
-                    <div className="rec-rows">
-                      <div className="rec-row">
-                        <span className="rec-label">
-                          Best round
-                          <span className="rec-cap">
-                            {s.best} strokes · {courseName(s.bestCourse)}
-                          </span>
-                        </span>
-                        <span
-                          className="rec-num font-display"
-                          style={{ color: vsColor(s.bestVs) }}
-                        >
-                          {fmtVs(s.bestVs)}
-                        </span>
-                      </div>
-
-                      <div className="rec-row">
-                        <span className="rec-label">
-                          Average
-                          <span className="rec-cap">vs par, every round</span>
-                        </span>
-                        <span className="rec-num font-display">
-                          {s.avg > 0 ? `+${s.avg}` : s.avg === 0 ? "E" : s.avg}
-                        </span>
-                      </div>
-
-                      <div className="rec-row">
-                        <span className="rec-label">
-                          Worst day
-                          <span className="rec-cap">
-                            {s.worst} strokes · {courseName(s.worstCourse)}
-                          </span>
-                        </span>
-                        <span
-                          className="rec-num font-display"
-                          style={{ color: vsColor(s.worstVs) }}
-                        >
-                          {fmtVs(s.worstVs)}
-                        </span>
-                      </div>
-
-                      <div className="rec-row rec-row-aces">
-                        <span className="rec-label">
-                          Hole-in-ones
-                          <span className="rec-cap">
-                            {s.aces === 0
-                              ? "still chasing the first"
-                              : s.aces === 1
-                              ? "one for the highlight reel"
-                              : "absolute menace"}
-                          </span>
-                        </span>
-                        <span className="rec-num font-display rec-num-aces">
-                          {s.aces}
-                        </span>
-                      </div>
-                    </div>
-                  ) : (
-                    <p className="rec-empty">
-                      No completed rounds yet — finish all 18 to land on the
-                      board.
-                    </p>
-                  )}
-                </section>
-              );
-            })}
-
-            <div className="delete-all">
-              {confirmingDelete !== "all" ? (
-                <button
-                  className="btn btn-ghost"
-                  onClick={() => setConfirmingDelete("all")}
-                >
-                  Delete all records
-                </button>
-              ) : (
-                <div className="confirm-row">
-                  <button
-                    className="btn btn-ghost"
-                    onClick={() => setConfirmingDelete(null)}
-                  >
-                    Cancel
-                  </button>
-                  <button className="btn btn-danger" onClick={onDeleteAll}>
-                    Delete everything
-                  </button>
                 </div>
               )}
             </div>
@@ -1580,11 +1652,16 @@ const STYLES = `
 .score-head-row{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;}
 .course-pill{font-size:11px;letter-spacing:.1em;padding:3px 9px;border:1.5px solid var(--border-strong);border-radius:6px;}
 .hole-count{font-size:13px;color:var(--ink-soft);letter-spacing:.05em;}
-.hole-line{display:flex;align-items:baseline;gap:11px;animation:pop .28s ease;}
+.hole-line{display:flex;align-items:center;gap:11px;animation:pop .28s ease;}
 @keyframes pop{from{opacity:.3;transform:translateY(3px);}to{opacity:1;transform:none;}}
-.hole-big{font-size:34px;line-height:.9;}
-.par-badge{font-size:12px;letter-spacing:.06em;color:var(--muted);border:1.5px solid var(--border);border-radius:6px;padding:3px 8px;}
-.hole-progress{margin-left:auto;font-size:11px;letter-spacing:.05em;color:var(--muted);}
+.hole-big{font-size:46px;line-height:.85;color:var(--accent);}
+.par-badge{font-size:15px;letter-spacing:.05em;font-weight:700;color:var(--flag-ink);
+  background:var(--flag);border:none;border-radius:9px;padding:5px 11px;}
+.hole-progress{margin-left:auto;font-size:12px;letter-spacing:.05em;color:var(--ink-soft);font-weight:700;}
+.home-link{background:var(--surface);border:2px solid var(--border-strong);border-radius:11px;
+  font-family:'JetBrains Mono',monospace;font-weight:700;font-size:14px;letter-spacing:.04em;
+  color:var(--ink);padding:9px 14px;cursor:pointer;min-height:42px;}
+.home-link:active{transform:scale(.97);}
 
 .score-scroll{padding:12px 16px 4px;}
 
@@ -1719,31 +1796,83 @@ const STYLES = `
 .finish-row{display:flex;gap:10px;margin-bottom:10px;}
 .finish-row .btn{flex:1;}
 
-/* ---------- stats / records ---------- */
-.records-intro{font-size:16px;line-height:1.5;color:var(--ink-soft);margin-bottom:4px;}
-.records-intro b{color:var(--ink);font-weight:700;}
+/* ---------- stats / local leaderboard ---------- */
 .inline-confirm{display:flex;gap:8px;}
 
-.rec-card{background:var(--surface);border:2px solid var(--border-strong);border-radius:18px;
-  padding:18px 18px 8px;margin-bottom:14px;}
-.rec-head{display:flex;align-items:center;justify-content:space-between;gap:10px;}
-.rec-id{display:flex;align-items:center;gap:10px;min-width:0;}
-.rec-rank{font-size:24px;line-height:1;color:var(--muted);flex:none;}
-.rec-rank-1{font-size:26px;}
-.rec-name{font-size:34px;line-height:.9;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
-.rec-sub{font-size:12px;color:var(--muted);letter-spacing:.02em;margin:3px 0 6px;}
+.stats-hero{margin:2px 0 16px;}
+.stats-title{font-size:40px;line-height:.85;color:var(--ink);}
+.stats-sub{font-size:13px;color:var(--muted);margin-top:6px;letter-spacing:.02em;}
 
-.rec-rows{display:flex;flex-direction:column;}
-.rec-row{display:flex;align-items:center;justify-content:space-between;gap:14px;
-  padding:15px 0;border-top:1.5px solid var(--border);}
-.rec-label{display:flex;flex-direction:column;gap:3px;font-size:15px;font-weight:700;color:var(--ink);}
-.rec-cap{font-size:12px;font-weight:400;color:var(--muted);letter-spacing:.01em;}
-.rec-num{font-size:46px;line-height:.8;letter-spacing:.01em;flex:none;}
-.rec-row-aces{border-top:1.5px solid var(--border);}
-.rec-num-aces{color:#B8860B;}
-.rec-empty{font-size:13px;color:var(--muted);line-height:1.45;padding:10px 0 8px;border-top:1.5px solid var(--border);}
+/* segmented control */
+.segmented{display:flex;gap:4px;background:var(--surface);border:2px solid var(--border-strong);
+  border-radius:13px;padding:4px;margin-bottom:16px;}
+.segmented-btn{flex:1;border:none;background:transparent;border-radius:9px;padding:11px 6px;
+  font-family:'JetBrains Mono',monospace;font-weight:700;font-size:13px;letter-spacing:.06em;
+  color:var(--ink-soft);cursor:pointer;transition:background .12s ease;min-height:42px;}
+.segmented-btn.seg-active{background:var(--ink);color:var(--surface-2);}
 
-.delete-all{margin-top:8px;}
+/* summary strip */
+.score-strip{display:flex;align-items:center;background:var(--ink);border-radius:14px;
+  padding:14px 8px;margin-bottom:16px;}
+.strip-cell{flex:1;display:flex;flex-direction:column;align-items:center;gap:1px;}
+.strip-num{font-size:32px;line-height:.9;color:var(--surface-2);}
+.strip-lbl{font-size:9px;letter-spacing:.12em;font-family:'JetBrains Mono',monospace;color:rgba(251,252,246,.6);}
+.strip-div{width:1.5px;align-self:stretch;background:rgba(251,252,246,.18);margin:2px 0;}
+
+/* podium */
+.podium{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:20px;align-items:end;}
+.podium-card{display:flex;flex-direction:column;align-items:center;gap:2px;
+  border:2px solid var(--border-strong);border-radius:14px;padding:12px 6px 11px;background:var(--surface);}
+.podium-medal{font-size:20px;line-height:1;}
+.podium-name{font-size:13px;font-weight:700;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.podium-best{font-size:34px;line-height:.85;margin-top:2px;}
+.podium-vs{font-size:12px;font-weight:700;}
+.podium-rounds{font-size:9px;color:var(--muted);letter-spacing:.06em;margin-top:1px;}
+.podium-card.medal-1{background:var(--flag);border-color:var(--flag);order:2;padding-top:18px;padding-bottom:15px;}
+.podium-card.medal-1 .podium-name,.podium-card.medal-1 .podium-best{color:var(--flag-ink);}
+.podium-card.medal-1 .podium-rounds{color:rgba(19,36,27,.65);}
+.podium-card.medal-2{order:1;border-color:#9AA7A0;}
+.podium-card.medal-3{order:3;border-color:#C08A57;}
+
+/* main leaderboard */
+.board-heading{font-size:11px;letter-spacing:.12em;color:var(--muted);margin:0 0 10px;}
+.leaderboard-list{display:flex;flex-direction:column;gap:8px;margin-bottom:22px;}
+.leaderboard-row{display:flex;align-items:center;gap:12px;background:var(--surface);
+  border:2px solid var(--border);border-radius:13px;padding:12px 14px;}
+.leaderboard-row.lb-first{border-color:var(--flag);border-width:2.5px;}
+.rank-medal{font-size:22px;line-height:1;min-width:34px;text-align:center;color:var(--muted);flex:none;}
+.rank-medal.medal-1,.rank-medal.medal-2,.rank-medal.medal-3{font-size:24px;}
+.lb-main{flex:1;min-width:0;}
+.lb-line1{display:flex;align-items:baseline;justify-content:space-between;gap:10px;}
+.lb-player{font-size:17px;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.lb-scorewrap{display:flex;align-items:baseline;gap:8px;flex:none;}
+.lb-best{font-size:22px;font-weight:700;}
+.stat-pill{font-size:13px;font-weight:700;border:1.5px solid var(--border);border-radius:7px;padding:1px 6px;}
+.lb-line2{font-size:11px;color:var(--muted);letter-spacing:.03em;margin-top:3px;}
+
+/* secondary mini-boards */
+.mini-boards{display:flex;flex-direction:column;gap:12px;margin-bottom:20px;}
+.mini-board{background:var(--surface-2);border:1.5px solid var(--border);border-radius:14px;padding:14px 15px;}
+.mini-title{font-size:19px;line-height:1;margin-bottom:9px;color:var(--ink);}
+.mini-row{display:flex;align-items:center;justify-content:space-between;gap:10px;
+  padding:8px 0;border-top:1px solid var(--border);}
+.mini-row:first-of-type{border-top:none;}
+.mini-name{font-size:15px;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.mini-val{font-size:16px;font-weight:700;flex:none;}
+.mini-unit{font-size:11px;color:var(--muted);font-weight:400;}
+.mini-empty{font-size:13px;color:var(--muted);padding:4px 0;}
+
+/* manage data (quiet) */
+.manage-data{margin-top:6px;border-top:1px solid var(--border);padding-top:12px;}
+.manage-toggle{background:none;border:none;color:var(--muted);font-family:'DM Sans',sans-serif;
+  font-size:13px;cursor:pointer;padding:6px 0;}
+.manage-body{margin-top:8px;}
+.manage-row{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:9px 0;border-top:1px solid var(--border);}
+.manage-name{font-size:15px;color:var(--ink-soft);}
+.manage-del{background:none;border:none;color:var(--red);font-family:'DM Sans',sans-serif;font-size:13px;font-weight:500;cursor:pointer;padding:6px 4px;}
+.manage-all{margin-top:12px;}
+
+.board-empty{padding:40px 20px;}
 
 @media (prefers-reduced-motion: reduce){
   *{animation:none !important;transition:none !important;}

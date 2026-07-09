@@ -621,12 +621,11 @@ function HomeView({
       <div className="scroll pad">
         <header className="home-head">
           <div className="brand-row">
-            <span className="font-display brand">OAKLEY&nbsp;PUTT</span>
-            <span className="tag tag-live">LIVE</span>
+            <span className="font-display brand">OAKLEY&nbsp;GREENS</span>
           </div>
           <p className="lede">
-            The digital scorecard. Add players, tap in scores, watch the
-            leaderboard move.
+            Add players, tap to score, and watch the leaderboard update in real
+            time.
           </p>
         </header>
 
@@ -719,19 +718,20 @@ function HomeView({
               <div className="how-step">
                 <span className="how-emoji">✏️</span>
                 <span className="how-text">
-                  <b>Tap in scores</b> hole by hole — no pencil, no math
+                  <b>Tap in scores</b> hole by hole — scores update
+                  automatically
                 </span>
               </div>
               <div className="how-step">
                 <span className="how-emoji">🏆</span>
                 <span className="how-text">
-                  <b>Watch the leaderboard</b> and settle it live
+                  <b>Watch the leaderboard</b> and track live standings
                 </span>
               </div>
               <div className="how-step">
                 <span className="how-emoji">🕳️</span>
                 <span className="how-text">
-                  <b>Track aces & records</b> to brag about later
+                  <b>Save local records</b>, best scores, and aces for next time
                 </span>
               </div>
             </div>
@@ -768,7 +768,7 @@ function PlayersView({
   return (
     <div className="screen">
       <header className="topbar">
-        <button className="linkbtn" onClick={onBack}>
+        <button className="nav-pill" onClick={onBack}>
           ← BACK
         </button>
         <span className="topbar-title font-display">WHO'S PLAYING?</span>
@@ -905,11 +905,21 @@ function ScoringView({
       {/* compact sticky header */}
       <header className="score-head">
         <div className="score-head-row">
-          <button className="home-link" onClick={onHome}>
+          <button className="nav-pill" onClick={onHome}>
             ← HOME
           </button>
-          <span className="course-pill font-mono">{course.label}</span>
-          <span className="hole-count font-mono">{currentHole + 1}/18</span>
+          <div
+            className={`course-badge ${
+              course.id === "black" ? "badge-black" : "badge-white"
+            }`}
+          >
+            <span className="course-badge-name font-display">
+              {course.label} COURSE
+            </span>
+            <span className="course-badge-sub font-mono">
+              Hole {currentHole + 1} of 18 · Par {par}
+            </span>
+          </div>
         </div>
         <div className="hole-line" key={currentHole}>
           <span className="font-display hole-big">HOLE {currentHole + 1}</span>
@@ -1271,7 +1281,7 @@ function StatsView({
   return (
     <div className="screen">
       <header className="topbar">
-        <button className="home-link" onClick={onBack}>
+        <button className="nav-pill" onClick={onBack}>
           ← HOME
         </button>
         <span className="topbar-spacer" />
@@ -1649,19 +1659,27 @@ const STYLES = `
 /* ---------- scoring ---------- */
 .scoring{background:var(--bg);}
 .score-head{padding:calc(10px + env(safe-area-inset-top)) 16px 12px;background:var(--bg);border-bottom:1px solid var(--border);}
-.score-head-row{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;}
-.course-pill{font-size:11px;letter-spacing:.1em;padding:3px 9px;border:1.5px solid var(--border-strong);border-radius:6px;}
-.hole-count{font-size:13px;color:var(--ink-soft);letter-spacing:.05em;}
+.score-head-row{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:8px;}
+.course-badge{display:flex;flex-direction:column;align-items:flex-end;gap:1px;text-align:right;
+  border:2px solid var(--border-strong);border-radius:11px;padding:6px 12px;}
+.course-badge-name{font-size:20px;line-height:.9;letter-spacing:.03em;}
+.course-badge-sub{font-size:10px;letter-spacing:.03em;}
+.badge-black{background:var(--ink);border-color:var(--ink);}
+.badge-black .course-badge-name{color:var(--surface-2);}
+.badge-black .course-badge-sub{color:rgba(251,252,246,.65);}
+.badge-white{background:var(--surface);}
+.badge-white .course-badge-name{color:var(--ink);}
+.badge-white .course-badge-sub{color:var(--muted);}
 .hole-line{display:flex;align-items:center;gap:11px;animation:pop .28s ease;}
 @keyframes pop{from{opacity:.3;transform:translateY(3px);}to{opacity:1;transform:none;}}
 .hole-big{font-size:46px;line-height:.85;color:var(--accent);}
 .par-badge{font-size:15px;letter-spacing:.05em;font-weight:700;color:var(--flag-ink);
   background:var(--flag);border:none;border-radius:9px;padding:5px 11px;}
 .hole-progress{margin-left:auto;font-size:12px;letter-spacing:.05em;color:var(--ink-soft);font-weight:700;}
-.home-link{background:var(--surface);border:2px solid var(--border-strong);border-radius:11px;
+.nav-pill{background:var(--surface);border:2px solid var(--border-strong);border-radius:11px;
   font-family:'JetBrains Mono',monospace;font-weight:700;font-size:14px;letter-spacing:.04em;
   color:var(--ink);padding:9px 14px;cursor:pointer;min-height:42px;}
-.home-link:active{transform:scale(.97);}
+.nav-pill:active{transform:scale(.97);}
 
 .score-scroll{padding:12px 16px 4px;}
 

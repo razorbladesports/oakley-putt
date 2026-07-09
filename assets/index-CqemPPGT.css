@@ -1,0 +1,1 @@
+:root{--lightningcss-light:initial;--lightningcss-dark: ;color-scheme:light}*{box-sizing:border-box}html,body,#root{min-height:100%;margin:0;padding:0}body{-webkit-text-size-adjust:100%;-moz-text-size-adjust:100%;text-size-adjust:100%;overscroll-behavior-y:none;background:#ede6d3}#root{min-height:100dvh}

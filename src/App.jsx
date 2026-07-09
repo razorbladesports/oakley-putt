@@ -72,10 +72,25 @@ const generateRoundId = () =>
 const sumOfArr = (arr) => arr.reduce((a, b) => a + (b || 0), 0);
 
 function computePlayerStats(profile) {
-  const empty = { played: 0, completed: 0, best: null, bestVs: null, avg: null };
+  const empty = {
+    played: 0,
+    completed: 0,
+    best: null,
+    bestVs: null,
+    worst: null,
+    worstVs: null,
+    avg: null,
+  };
   const out = {
     totalRounds: profile.rounds.length,
     aces: 0,
+    // overall (both courses) aggregates for the headline tiles
+    best: null,
+    bestVs: null,
+    worst: null,
+    worstVs: null,
+    avg: null,
+    completedRounds: 0,
     byCourse: { black: { ...empty }, white: { ...empty } },
   };
   profile.rounds.forEach((r) => {
@@ -88,6 +103,10 @@ function computePlayerStats(profile) {
       if (c.best === null || r.total < c.best) {
         c.best = r.total;
         c.bestVs = r.vsPar;
+      }
+      if (c.worst === null || r.total > c.worst) {
+        c.worst = r.total;
+        c.worstVs = r.vsPar;
       }
     }
   });
@@ -105,6 +124,26 @@ function computePlayerStats(profile) {
         ) / 10;
     }
   });
+  // overall aggregates use vs-par so Black and White compare fairly
+  const allCompleted = profile.rounds.filter((r) => r.complete);
+  out.completedRounds = allCompleted.length;
+  if (allCompleted.length) {
+    let bestR = allCompleted[0];
+    let worstR = allCompleted[0];
+    allCompleted.forEach((r) => {
+      if (r.vsPar < bestR.vsPar) bestR = r;
+      if (r.vsPar > worstR.vsPar) worstR = r;
+    });
+    out.best = bestR.total;
+    out.bestVs = bestR.vsPar;
+    out.worst = worstR.total;
+    out.worstVs = worstR.vsPar;
+    out.avg =
+      Math.round(
+        (allCompleted.reduce((a, r) => a + r.vsPar, 0) / allCompleted.length) *
+          10
+      ) / 10;
+  }
   return out;
 }
 
@@ -611,12 +650,15 @@ function HomeView({
           </>
         ) : (
           <>
-            <p className="section-eyebrow font-mono">PICK A COURSE</p>
+            <p className="section-eyebrow font-mono">PICK A COURSE TO START</p>
             <button
               className="course-card course-black"
               onClick={() => onSelectCourse("black")}
             >
-              <span className="font-display course-name">BLACK</span>
+              <span className="cc-top">
+                <span className="font-display course-name">BLACK</span>
+                <span className="cc-arrow">→</span>
+              </span>
               <span className="font-mono course-par">
                 PAR {COURSES.black.total} · 18 HOLES
               </span>
@@ -625,14 +667,45 @@ function HomeView({
               className="course-card course-white"
               onClick={() => onSelectCourse("white")}
             >
-              <span className="font-display course-name">WHITE</span>
+              <span className="cc-top">
+                <span className="font-display course-name">WHITE</span>
+                <span className="cc-arrow">→</span>
+              </span>
               <span className="font-mono course-par">
                 PAR {COURSES.white.total} · 18 HOLES
               </span>
             </button>
 
-            <button className="btn btn-ghost" onClick={onViewStats}>
-              View your stats
+            <p className="section-eyebrow font-mono">HOW IT WORKS</p>
+            <div className="how-grid">
+              <div className="how-step">
+                <span className="how-emoji">⛳</span>
+                <span className="how-text">
+                  <b>Pick a course</b> and add everyone playing
+                </span>
+              </div>
+              <div className="how-step">
+                <span className="how-emoji">✏️</span>
+                <span className="how-text">
+                  <b>Tap in scores</b> hole by hole — no pencil, no math
+                </span>
+              </div>
+              <div className="how-step">
+                <span className="how-emoji">🏆</span>
+                <span className="how-text">
+                  <b>Watch the leaderboard</b> and settle it live
+                </span>
+              </div>
+              <div className="how-step">
+                <span className="how-emoji">🕳️</span>
+                <span className="how-text">
+                  <b>Track aces & records</b> to brag about later
+                </span>
+              </div>
+            </div>
+
+            <button className="btn btn-stats" onClick={onViewStats}>
+              📊 VIEW YOUR STATS & RECORDS
             </button>
           </>
         )}
@@ -857,10 +930,26 @@ function ScoringView({
       {/* footer: leaderboard bar + warning + nav + dots */}
       <footer className="score-footer">
         <button className="lb-bar" onClick={onOpenLeaderboard}>
-          <span className="lb-bar-left font-mono">
-            🏆 {leader ? leader.name.toUpperCase() : "—"} LEADS
+          <span className="lb-bar-left">
+            <span className="lb-bar-trophy">🏆</span>
+            <span className="lb-bar-name">
+              {leader ? leader.name.toUpperCase() : "—"}
+            </span>
           </span>
-          <span className="lb-bar-right font-mono">STANDINGS ▲</span>
+          <span className="lb-bar-mid">
+            {leader && (
+              <span
+                className="lb-bar-vs font-display"
+                style={{
+                  color:
+                    leader.vs === 0 ? "var(--surface-2)" : vsColor(leader.vs),
+                }}
+              >
+                {formatVs(leader.vs)}
+              </span>
+            )}
+            <span className="lb-bar-right font-mono">STANDINGS ▲</span>
+          </span>
         </button>
 
         {pendingAdvance && (
@@ -928,12 +1017,15 @@ function LeaderboardSheet({ leaderboard, formatVs, vsColor, onClose }) {
         <div className="sheet-body">
           {leaderboard.map((r) => (
             <div key={r.name} className={`lb-row rank-${r.rank}`}>
-              <span className="lb-rank font-mono">{r.rank}</span>
-              <span className="lb-name">{r.name}</span>
-              <span className="lb-thru font-mono">thru {r.played}</span>
-              <span className="lb-total font-mono">{r.total}</span>
+              <span className="lb-rank font-display">{r.rank}</span>
+              <span className="lb-id">
+                <span className="lb-name">{r.name}</span>
+                <span className="lb-thru font-mono">
+                  thru {r.played} · {r.total} strokes
+                </span>
+              </span>
               <span
-                className="lb-vs font-mono"
+                className="lb-vs font-display"
                 style={{ color: vsColor(r.vs) }}
               >
                 {formatVs(r.vs)}
@@ -1069,6 +1161,8 @@ function FinishedView({
    ============================================================ */
 function StatsView({
   playerStats,
+  formatVs,
+  vsColor,
   onBack,
   confirmingDelete,
   setConfirmingDelete,
@@ -1130,6 +1224,7 @@ function StatsView({
             {names.map((n) => {
               const s = computePlayerStats(playerStats[n]);
               const confirming = confirmingDelete === n;
+              const hasRounds = s.completedRounds > 0;
               return (
                 <div key={n} className="card stat-card">
                   <div className="stat-card-head">
@@ -1160,14 +1255,78 @@ function StatsView({
                     )}
                   </div>
                   <div className="stat-meta font-mono">
-                    {s.totalRounds} ROUND{s.totalRounds > 1 ? "S" : ""}
-                    {s.aces > 0 && (
-                      <span className="ace-tag"> · {s.aces} ACE{s.aces > 1 ? "S" : ""}</span>
-                    )}
+                    {s.totalRounds} ROUND{s.totalRounds === 1 ? "" : "S"} PLAYED
                   </div>
-                  <div className="course-cols">
-                    <CourseStatCol label="BLACK" data={s.byCourse.black} />
-                    <CourseStatCol label="WHITE" data={s.byCourse.white} />
+
+                  <div className="tile-grid">
+                    <div className="tile tile-best">
+                      <span className="tile-label font-mono">BEST ROUND</span>
+                      <span
+                        className="tile-num font-display"
+                        style={{ color: hasRounds ? vsColor(s.bestVs) : "var(--muted)" }}
+                      >
+                        {hasRounds ? formatVs(s.bestVs) : "—"}
+                      </span>
+                      <span className="tile-cap font-mono">
+                        {hasRounds ? `${s.best} strokes` : "no rounds yet"}
+                      </span>
+                    </div>
+
+                    <div className="tile tile-worst">
+                      <span className="tile-label font-mono">PERSONAL WORST</span>
+                      <span
+                        className="tile-num font-display"
+                        style={{ color: hasRounds ? vsColor(s.worstVs) : "var(--muted)" }}
+                      >
+                        {hasRounds ? formatVs(s.worstVs) : "—"}
+                      </span>
+                      <span className="tile-cap font-mono">
+                        {hasRounds ? `${s.worst} strokes` : "no rounds yet"}
+                      </span>
+                    </div>
+
+                    <div className="tile tile-avg">
+                      <span className="tile-label font-mono">AVERAGE</span>
+                      <span className="tile-num font-display">
+                        {hasRounds
+                          ? (s.avg > 0 ? `+${s.avg}` : s.avg === 0 ? "E" : s.avg)
+                          : "—"}
+                      </span>
+                      <span className="tile-cap font-mono">
+                        {hasRounds ? "vs par / round" : "no rounds yet"}
+                      </span>
+                    </div>
+
+                    <div className="tile tile-aces">
+                      <span className="tile-label font-mono">HOLE-IN-ONES</span>
+                      <span className="tile-num font-display">{s.aces}</span>
+                      <span className="tile-cap font-mono">
+                        {s.aces === 0
+                          ? "still chasing one"
+                          : s.aces === 1
+                          ? "certified ace"
+                          : "ace machine 🔥"}
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="course-line font-mono">
+                    <span>
+                      BLACK{" "}
+                      <b>
+                        {s.byCourse.black.best != null
+                          ? s.byCourse.black.best
+                          : "—"}
+                      </b>
+                    </span>
+                    <span>
+                      WHITE{" "}
+                      <b>
+                        {s.byCourse.white.best != null
+                          ? s.byCourse.white.best
+                          : "—"}
+                      </b>
+                    </span>
                   </div>
                 </div>
               );
@@ -1202,30 +1361,20 @@ function StatsView({
   );
 }
 
-function CourseStatCol({ label, data }) {
-  const has = data.completed > 0;
-  return (
-    <div className="course-col">
-      <span className="cc-label font-mono">{label}</span>
-      <span className="cc-best font-mono">{has ? data.best : "—"}</span>
-      <span className="cc-cap font-mono">
-        {has ? `BEST · AVG ${data.avg}` : "no rounds yet"}
-      </span>
-    </div>
-  );
-}
-
 /* ============================================================
    STYLES
    ============================================================ */
 const STYLES = `
-@import url('https://fonts.googleapis.com/css2?family=Anton&family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,700&family=JetBrains+Mono:wght@500;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,700&family=JetBrains+Mono:wght@500;700&display=swap');
 
 .app-root{
-  --bg:#EDE6D3; --surface:#F8F3E6; --surface-2:#FCFAF1;
-  --ink:#0F0F0F; --ink-soft:#3A3631; --muted:#8E8676;
-  --border:#D8CFB8; --border-strong:#1F1B16;
-  --accent:#FF5C2B; --green:#2C7A3B; --red:#C8351E;
+  /* Oakley Greens clubhouse palette — pine + fairway + golf gold */
+  --bg:#E7EFDF; --surface:#F3F8EC; --surface-2:#FBFCF6;
+  --ink:#13241B; --ink-soft:#3A4C40; --muted:#7C8B78;
+  --border:#CBD8BE; --border-strong:#13241B;
+  --accent:#1F7A3D; --accent-ink:#FFFFFF;      /* fairway green — primary actions */
+  --flag:#F0B429; --flag-ink:#13241B;           /* golf gold — trophies, aces, leader */
+  --green:#2C8A4E; --red:#BF3D28;               /* under / over par */
   --radius:16px;
   font-family:'DM Sans',system-ui,sans-serif;
   color:var(--ink);
@@ -1233,7 +1382,7 @@ const STYLES = `
   -webkit-tap-highlight-color:transparent;
 }
 .app-root *{box-sizing:border-box;margin:0;padding:0;}
-.font-display{font-family:'Anton',sans-serif;letter-spacing:.01em;}
+.font-display{font-family:'Bebas Neue',sans-serif;letter-spacing:.02em;font-weight:400;}
 .font-mono{font-family:'JetBrains Mono',monospace;font-variant-numeric:tabular-nums;}
 
 /* full-bleed mobile shell */
@@ -1251,7 +1400,7 @@ const STYLES = `
 .footer{padding:12px 16px calc(14px + env(safe-area-inset-bottom));background:var(--bg);border-top:1px solid var(--border);}
 
 .boot{height:100dvh;display:grid;place-items:center;}
-.boot-mark{font-size:26px;color:var(--ink);opacity:.35;letter-spacing:.04em;}
+.boot-mark{font-size:34px;color:var(--ink);opacity:.35;letter-spacing:.05em;}
 
 /* ---------- buttons ---------- */
 .btn{
@@ -1278,17 +1427,17 @@ const STYLES = `
 /* ---------- topbars ---------- */
 .topbar{display:flex;align-items:center;justify-content:space-between;
   padding:calc(10px + env(safe-area-inset-top)) 14px 10px;border-bottom:1px solid var(--border);background:var(--bg);}
-.topbar-title{font-size:17px;letter-spacing:.03em;}
+.topbar-title{font-size:22px;letter-spacing:.04em;}
 .topbar-spacer{width:44px;}
 
 /* ---------- home ---------- */
 .home-head{padding-top:calc(8px + env(safe-area-inset-top));margin-bottom:22px;}
 .brand-row{display:flex;align-items:center;gap:10px;margin-bottom:10px;}
-.brand{font-size:30px;line-height:1;}
+.brand{font-size:40px;line-height:.9;}
 .lede{color:var(--ink-soft);font-size:15px;line-height:1.45;max-width:34ch;}
 .tag{font-family:'JetBrains Mono',monospace;font-weight:700;font-size:10px;letter-spacing:.12em;
   padding:4px 8px;border-radius:6px;border:1.5px solid var(--border-strong);}
-.tag-live{background:var(--accent);color:#fff;border-color:var(--accent);}
+.tag-live{background:var(--flag);color:var(--flag-ink);border-color:var(--flag);}
 .tag-onink{background:transparent;color:var(--surface-2);border-color:var(--surface-2);}
 .section-eyebrow{font-size:11px;letter-spacing:.14em;color:var(--muted);margin:22px 0 10px;}
 
@@ -1298,15 +1447,28 @@ const STYLES = `
 .course-card:active{transform:scale(.985);}
 .course-black{background:var(--ink);color:var(--surface-2);}
 .course-white{background:var(--surface);}
-.course-name{font-size:34px;line-height:.9;}
+.course-name{font-size:46px;line-height:.85;}
 .course-par{font-size:12px;letter-spacing:.08em;opacity:.8;}
+.cc-top{display:flex;align-items:center;justify-content:space-between;width:100%;}
+.cc-arrow{font-size:22px;font-weight:700;opacity:.55;}
+
+.how-grid{display:flex;flex-direction:column;gap:8px;margin-bottom:16px;}
+.how-step{display:flex;align-items:center;gap:12px;background:var(--surface);
+  border:1.5px solid var(--border);border-radius:12px;padding:12px 14px;}
+.how-emoji{font-size:22px;flex:none;width:26px;text-align:center;}
+.how-text{font-size:14px;color:var(--ink-soft);line-height:1.35;}
+.how-text b{color:var(--ink);font-weight:700;}
+
+.btn-stats{background:var(--ink);color:var(--surface-2);border:2px solid var(--ink);
+  font-family:'Bebas Neue',sans-serif;font-size:19px;letter-spacing:.06em;font-weight:400;}
+.btn-stats:active{transform:scale(.98);}
 
 .card{background:var(--surface);border:2px solid var(--border-strong);border-radius:var(--radius);padding:16px;margin-bottom:12px;}
 .card-ink{background:var(--ink);color:var(--surface-2);border-color:var(--ink);}
 .resume-card{margin-bottom:14px;}
 .resume-top{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;}
 .resume-hole{font-size:14px;letter-spacing:.06em;}
-.resume-course{font-size:26px;margin-bottom:12px;}
+.resume-course{font-size:34px;line-height:.9;margin-bottom:12px;}
 .resume-meta{font-size:11px;letter-spacing:.06em;opacity:.72;margin-top:12px;}
 .chips{display:flex;flex-wrap:wrap;gap:7px;}
 .chip{font-size:13px;font-weight:500;padding:6px 11px;border-radius:20px;border:1.5px solid var(--border);background:var(--surface-2);color:var(--ink);}
@@ -1335,7 +1497,7 @@ const STYLES = `
 .remove-x:active{transform:scale(.94);}
 
 .empty{text-align:center;padding:44px 20px;}
-.empty-title{font-size:24px;color:var(--ink);margin-bottom:8px;}
+.empty-title{font-size:31px;color:var(--ink);margin-bottom:8px;}
 .empty-sub{color:var(--muted);font-size:14px;line-height:1.5;max-width:32ch;margin:0 auto;}
 
 /* ---------- scoring ---------- */
@@ -1346,7 +1508,7 @@ const STYLES = `
 .hole-count{font-size:13px;color:var(--ink-soft);letter-spacing:.05em;}
 .hole-line{display:flex;align-items:baseline;gap:11px;animation:pop .28s ease;}
 @keyframes pop{from{opacity:.3;transform:translateY(3px);}to{opacity:1;transform:none;}}
-.hole-big{font-size:26px;line-height:1;}
+.hole-big{font-size:34px;line-height:.9;}
 .par-badge{font-size:12px;letter-spacing:.06em;color:var(--muted);border:1.5px solid var(--border);border-radius:6px;padding:3px 8px;}
 
 .score-scroll{padding:12px 16px 4px;}
@@ -1358,7 +1520,7 @@ const STYLES = `
 .pc-total{font-size:22px;font-weight:700;}
 .pc-vs{font-size:14px;font-weight:700;}
 .pc-sub{font-size:11px;color:var(--muted);letter-spacing:.04em;margin:2px 0 11px;}
-.pc-flag{color:var(--accent);font-weight:700;}
+.pc-flag{color:#B8860B;font-weight:700;}
 .score-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;}
 .score-btn{
   min-height:56px;border:2px solid var(--border-strong);border-radius:12px;
@@ -1368,7 +1530,7 @@ const STYLES = `
 }
 .score-btn:active{transform:scale(.93);}
 .score-btn.sel{background:var(--ink);color:var(--surface-2);border-color:var(--ink);}
-.score-btn.sel-ace{background:var(--accent);color:#fff;border-color:var(--accent);box-shadow:0 0 0 3px rgba(255,92,43,.22);}
+.score-btn.sel-ace{background:var(--flag);color:var(--flag-ink);border-color:var(--flag);box-shadow:0 0 0 3px rgba(240,180,41,.28);}
 .scroll-tail{height:4px;}
 
 /* footer: leaderboard bar + nav + dots */
@@ -1378,10 +1540,14 @@ const STYLES = `
   background:var(--ink);color:var(--surface-2);border:none;border-radius:11px;
   padding:11px 14px;margin-bottom:9px;cursor:pointer;}
 .lb-bar:active{transform:scale(.99);}
-.lb-bar-left{font-size:12px;letter-spacing:.06em;}
-.lb-bar-right{font-size:11px;letter-spacing:.08em;opacity:.7;}
+.lb-bar-left{display:flex;align-items:center;gap:8px;min-width:0;flex:1;}
+.lb-bar-trophy{font-size:15px;flex:none;}
+.lb-bar-name{font-family:'JetBrains Mono',monospace;font-weight:700;font-size:12px;letter-spacing:.05em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.lb-bar-mid{display:flex;align-items:center;gap:13px;flex:none;}
+.lb-bar-vs{font-size:25px;line-height:.9;}
+.lb-bar-right{font-size:10px;letter-spacing:.08em;opacity:.7;}
 
-.warn{background:#FBEEDF;border:2px solid var(--accent);border-radius:12px;padding:11px 13px;margin-bottom:9px;}
+.warn{background:#FBF1D6;border:2px solid var(--flag);border-radius:12px;padding:11px 13px;margin-bottom:9px;}
 .warn-text{display:block;font-size:13px;color:var(--ink);line-height:1.4;margin-bottom:9px;font-weight:500;}
 .warn-actions{display:flex;gap:9px;}
 .warn-actions .btn{flex:1;}
@@ -1392,7 +1558,7 @@ const STYLES = `
 
 .dots{display:flex;gap:5px;justify-content:space-between;}
 .dot{flex:1;height:9px;border-radius:3px;border:none;background:var(--border);cursor:pointer;padding:0;transition:background .15s ease;}
-.dot-partial{background:#E7C48A;}
+.dot-partial{background:#E7CD8C;}
 .dot-full{background:var(--ink);}
 .dot-current{outline:2px solid var(--accent);outline-offset:1px;}
 
@@ -1408,28 +1574,28 @@ const STYLES = `
 @keyframes slideup{from{transform:translateY(30px);opacity:.6;}to{transform:none;opacity:1;}}
 .sheet-grip{width:40px;height:4px;border-radius:2px;background:var(--border);margin:2px auto 12px;}
 .sheet-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;}
-.sheet-title{font-size:22px;}
-.lb-row{display:grid;grid-template-columns:30px 1fr auto 42px 40px;align-items:center;gap:8px;
-  padding:13px 12px;border:2px solid var(--border);border-radius:12px;margin-bottom:8px;background:var(--surface);}
-.lb-row.rank-1{border-color:var(--accent);background:var(--surface);}
-.lb-rank{font-size:16px;font-weight:700;color:var(--muted);}
-.rank-1 .lb-rank{color:var(--accent);}
-.lb-name{font-size:16px;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
-.lb-thru{font-size:10px;color:var(--muted);letter-spacing:.04em;}
-.lb-total{font-size:18px;font-weight:700;text-align:right;}
-.lb-vs{font-size:13px;font-weight:700;text-align:right;}
+.sheet-title{font-size:29px;}
+.lb-row{display:grid;grid-template-columns:34px 1fr auto;align-items:center;gap:11px;
+  padding:12px 14px;border:2px solid var(--border);border-radius:12px;margin-bottom:8px;background:var(--surface);}
+.lb-row.rank-1{border-color:var(--flag);background:var(--surface);border-width:2.5px;}
+.lb-rank{font-size:26px;line-height:1;color:var(--muted);text-align:center;}
+.rank-1 .lb-rank{color:#B8860B;}
+.lb-id{display:flex;flex-direction:column;gap:1px;min-width:0;}
+.lb-name{font-size:17px;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.lb-thru{font-size:10px;color:var(--muted);letter-spacing:.03em;}
+.lb-vs{font-size:36px;line-height:.85;text-align:right;min-width:56px;}
 
 /* ---------- finished ---------- */
 .finish-head{display:flex;align-items:center;gap:12px;padding-top:calc(6px + env(safe-area-inset-top));margin-bottom:16px;}
-.finish-title{font-size:40px;line-height:.9;}
+.finish-title{font-size:54px;line-height:.85;}
 .saved-pill{background:var(--green);color:#fff;font-family:'JetBrains Mono',monospace;font-weight:700;
   font-size:11px;letter-spacing:.08em;padding:5px 10px;border-radius:7px;animation:fade .3s ease;}
 .winner-card{padding:18px;}
-.winner-name{font-size:30px;line-height:1;margin:9px 0 6px;}
+.winner-name{font-size:42px;line-height:.9;margin:8px 0 6px;}
 .winner-score{font-size:15px;letter-spacing:.05em;opacity:.85;}
 .standing{display:flex;align-items:center;gap:13px;padding:13px 15px;}
 .rank-badge{width:30px;height:30px;border-radius:8px;display:grid;place-items:center;font-size:15px;font-weight:700;flex:none;border:2px solid var(--border-strong);}
-.rk-1{background:var(--accent);color:#fff;border-color:var(--accent);}
+.rk-1{background:var(--flag);color:var(--flag-ink);border-color:var(--flag);}
 .rk-2{background:var(--ink);color:var(--surface-2);border-color:var(--ink);}
 .rk-3{background:var(--surface-2);color:var(--ink);}
 .rk-x{background:transparent;color:var(--muted);border-color:var(--border);}
@@ -1457,21 +1623,33 @@ const STYLES = `
 
 /* ---------- stats ---------- */
 .stat-summary{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:16px;}
-.mini-stat{display:flex;flex-direction:column;align-items:center;gap:3px;padding:15px 8px;margin:0;}
-.mini-stat.accent{background:var(--accent);border-color:var(--accent);color:#fff;}
-.mini-num{font-size:26px;font-weight:700;}
+.mini-stat{display:flex;flex-direction:column;align-items:center;gap:2px;padding:15px 8px;margin:0;}
+.mini-stat.accent{background:var(--flag);border-color:var(--flag);color:var(--flag-ink);}
+.mini-num{font-family:'Bebas Neue',sans-serif;font-size:34px;line-height:.9;}
 .mini-label{font-size:9px;letter-spacing:.12em;font-family:'JetBrains Mono',monospace;opacity:.75;}
-.stat-card{padding:15px 16px;}
+.stat-card{padding:16px;}
 .stat-card-head{display:flex;align-items:center;justify-content:space-between;}
-.stat-name{font-size:22px;}
+.stat-name{font-size:29px;}
 .inline-confirm{display:flex;gap:8px;}
-.stat-meta{font-size:11px;color:var(--muted);letter-spacing:.06em;margin:2px 0 13px;}
-.ace-tag{color:var(--accent);font-weight:700;}
-.course-cols{display:grid;grid-template-columns:1fr 1fr;gap:10px;}
-.course-col{display:flex;flex-direction:column;gap:3px;background:var(--surface-2);border:1.5px solid var(--border);border-radius:11px;padding:12px 13px;}
-.cc-label{font-size:10px;letter-spacing:.1em;color:var(--muted);}
-.cc-best{font-size:26px;font-weight:700;line-height:1;}
-.cc-cap{font-size:9px;letter-spacing:.06em;color:var(--muted);}
+.stat-meta{font-size:10px;color:var(--muted);letter-spacing:.1em;margin:2px 0 13px;}
+
+.tile-grid{display:grid;grid-template-columns:1fr 1fr;gap:9px;}
+.tile{display:flex;flex-direction:column;align-items:center;gap:2px;
+  border:2px solid var(--border-strong);border-radius:13px;padding:14px 8px 11px;background:var(--surface-2);}
+.tile-best{background:#EAF4E7;}
+.tile-worst{background:#F8E9E4;}
+.tile-avg{background:var(--surface-2);}
+.tile-aces{background:var(--flag);border-color:var(--flag);}
+.tile-label{font-size:9px;letter-spacing:.11em;color:var(--muted);}
+.tile-aces .tile-label{color:var(--flag-ink);opacity:.8;}
+.tile-num{font-size:44px;line-height:.82;letter-spacing:.01em;}
+.tile-aces .tile-num{color:var(--flag-ink);}
+.tile-cap{font-size:9px;letter-spacing:.04em;color:var(--muted);text-align:center;}
+.tile-aces .tile-cap{color:var(--flag-ink);opacity:.85;}
+
+.course-line{display:flex;gap:10px;margin-top:11px;font-size:11px;letter-spacing:.06em;color:var(--muted);}
+.course-line span{flex:1;background:var(--surface-2);border:1.5px solid var(--border);border-radius:10px;padding:8px 11px;display:flex;justify-content:space-between;}
+.course-line b{color:var(--ink);font-size:15px;}
 .delete-all{margin-top:8px;}
 
 @media (prefers-reduced-motion: reduce){

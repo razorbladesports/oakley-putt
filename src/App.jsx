@@ -136,8 +136,10 @@ function computePlayerStats(profile) {
     });
     out.best = bestR.total;
     out.bestVs = bestR.vsPar;
+    out.bestCourse = bestR.course;
     out.worst = worstR.total;
     out.worstVs = worstR.vsPar;
+    out.worstCourse = worstR.course;
     out.avg =
       Math.round(
         (allCompleted.reduce((a, r) => a + r.vsPar, 0) / allCompleted.length) *
@@ -158,6 +160,7 @@ export default function App() {
   const [scores, setScores] = useState({});
   const [currentHole, setCurrentHole] = useState(0);
   const [roundId, setRoundId] = useState(null);
+  const [activePlayer, setActivePlayer] = useState(null); // who we're scoring now
 
   // persistent stats
   const [playerStats, setPlayerStats] = useState({});
@@ -371,31 +374,61 @@ export default function App() {
       return n;
     });
     setCurrentHole(0);
+    setActivePlayer(players[0] || null);
     setRoundId(generateRoundId());
     setView("scoring");
   };
 
+  // first player with no score on a hole (falls back to first player)
+  const firstUnscoredOnHole = (holeIdx) =>
+    players.find((p) => (scores[p] || [])[holeIdx] == null) || players[0] || null;
+
   const setScore = (name, value) => {
+    const prev = (scores[name] || [])[currentHole];
+    const erasing = prev === value;
     setScores((s) => {
       const arr = [...(s[name] || Array(18).fill(null))];
       arr[currentHole] = arr[currentHole] === value ? null : value; // re-tap erases
       return { ...s, [name]: arr };
     });
+    // auto-advance to the next player who still needs a score on this hole
+    if (!erasing) {
+      const idx = players.indexOf(name);
+      let nextP = null;
+      for (let i = 1; i <= players.length; i++) {
+        const cand = players[(idx + i) % players.length];
+        if (cand === name) continue;
+        if ((scores[cand] || [])[currentHole] == null) {
+          nextP = cand;
+          break;
+        }
+      }
+      if (nextP) setActivePlayer(nextP); // else stay put — hole is complete
+    }
   };
+
+  const selectActivePlayer = (name) => setActivePlayer(name);
 
   const jumpToHole = (h) => {
     setCurrentHole(h);
+    setActivePlayer(firstUnscoredOnHole(h));
     setPendingAdvance(null);
   };
   const prevHole = () => {
     setPendingAdvance(null);
-    setCurrentHole((h) => Math.max(0, h - 1));
+    const h = Math.max(0, currentHole - 1);
+    setCurrentHole(h);
+    setActivePlayer(firstUnscoredOnHole(h));
   };
 
   const goNext = () => {
     setPendingAdvance(null);
     if (currentHole >= 17) setView("finished");
-    else setCurrentHole((h) => h + 1);
+    else {
+      const h = currentHole + 1;
+      setCurrentHole(h);
+      setActivePlayer(firstUnscoredOnHole(h));
+    }
   };
   const tryNext = () => {
     if (unscoredThisHole > 0 && pendingAdvance == null) {
@@ -410,7 +443,10 @@ export default function App() {
     setPendingAdvance(null);
     setView("home");
   };
-  const resumeRound = () => setView("scoring");
+  const resumeRound = () => {
+    setActivePlayer(firstUnscoredOnHole(currentHole));
+    setView("scoring");
+  };
 
   const discardRound = () => {
     setConfirmingDiscard(false);
@@ -422,6 +458,7 @@ export default function App() {
     players.forEach((p) => (fresh[p] = Array(18).fill(null)));
     setScores(fresh);
     setCurrentHole(0);
+    setActivePlayer(players[0] || null);
     setRoundId(generateRoundId());
     setShowSavedPill(false);
     setView("scoring");
@@ -521,6 +558,8 @@ export default function App() {
           {...shared}
           holeComplete={holeComplete}
           unscoredThisHole={unscoredThisHole}
+          activePlayer={activePlayer}
+          onSelectPlayer={selectActivePlayer}
           onScore={setScore}
           onPrev={prevHole}
           onNext={tryNext}
@@ -834,10 +873,11 @@ function ScoringView({
   players,
   scores,
   currentHole,
+  activePlayer,
+  onSelectPlayer,
   onScore,
   totalForPlayer,
   versusPar,
-  playedCountFor,
   formatVs,
   vsColor,
   holeCompleteness,
@@ -856,6 +896,16 @@ function ScoringView({
   const par = course.pars[currentHole];
   const leader = leaderboard[0];
   const isLast = currentHole >= 17;
+  const scoredCount = players.length - unscoredThisHole;
+
+  // resolve the focused player (fallback if active is stale)
+  const active =
+    activePlayer && players.includes(activePlayer)
+      ? activePlayer
+      : players.find((p) => (scores[p] || [])[currentHole] == null) ||
+        players[0];
+  const activeVal = (scores[active] || [])[currentHole];
+  const activeVs = versusPar(active);
 
   return (
     <div className="screen scoring">
@@ -866,64 +916,84 @@ function ScoringView({
             ← HOME
           </button>
           <span className="course-pill font-mono">{course.label}</span>
-          <span className="hole-count font-mono">
-            {currentHole + 1}/18
-          </span>
+          <span className="hole-count font-mono">{currentHole + 1}/18</span>
         </div>
         <div className="hole-line" key={currentHole}>
           <span className="font-display hole-big">HOLE {currentHole + 1}</span>
           <span className="par-badge font-mono">PAR {par}</span>
+          <span className="hole-progress font-mono">
+            {scoredCount}/{players.length} in
+          </span>
         </div>
       </header>
 
-      {/* player cards */}
       <div className="scroll score-scroll">
-        {players.map((p) => {
-          const val = (scores[p] || [])[currentHole];
-          const scoredHole = val != null;
-          const vs = versusPar(p);
-          return (
-            <div
-              key={p}
-              className={`card player-card ${scoredHole ? "" : "needs-score"}`}
-            >
-              <div className="pc-head">
-                <span className="pc-name">{p}</span>
-                <span className="pc-totals">
-                  <span className="font-mono pc-total">{totalForPlayer(p)}</span>
-                  <span
-                    className="font-mono pc-vs"
-                    style={{ color: vsColor(vs) }}
-                  >
-                    {formatVs(vs)}
+        {/* player selector strip */}
+        <div className="psel-wrap">
+          <div className="psel">
+            {players.map((p, i) => {
+              const v = (scores[p] || [])[currentHole];
+              const isActive = p === active;
+              return (
+                <button
+                  key={p}
+                  className={`pchip ${isActive ? "pchip-active" : ""} ${
+                    v != null ? "pchip-done" : ""
+                  }`}
+                  onClick={() => onSelectPlayer(p)}
+                >
+                  <span className="pchip-num font-mono">{i + 1}</span>
+                  <span className="pchip-name">{p}</span>
+                  <span className="pchip-val font-mono">
+                    {v != null ? v : "–"}
                   </span>
-                </span>
-              </div>
-              <div className="pc-sub font-mono">
-                {playedCountFor(p)}/18 played
-                {!scoredHole && (
-                  <span className="pc-flag"> · needs a score</span>
-                )}
-              </div>
-              <div className="score-grid">
-                {SCORE_OPTIONS.map((n) => {
-                  const selected = val === n;
-                  return (
-                    <button
-                      key={n}
-                      className={`score-btn ${
-                        selected ? (n === 1 ? "sel-ace" : "sel") : ""
-                      }`}
-                      onClick={() => onScore(p, n)}
-                    >
-                      {n}
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-          );
-        })}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* single focused scoring card */}
+        <div className="focus-card" key={active + currentHole}>
+          <div className="focus-top">
+            <span className="focus-eyebrow font-mono">NOW SCORING</span>
+            <span className="focus-totals">
+              <span className="font-mono focus-total">
+                {totalForPlayer(active)}
+              </span>
+              <span
+                className="font-mono focus-vs"
+                style={{ color: vsColor(activeVs) }}
+              >
+                {formatVs(activeVs)}
+              </span>
+            </span>
+          </div>
+          <div className="focus-name font-display">{active}</div>
+
+          <div className="score-grid focus-grid">
+            {SCORE_OPTIONS.map((n) => {
+              const selected = activeVal === n;
+              return (
+                <button
+                  key={n}
+                  className={`score-btn ${
+                    selected ? (n === 1 ? "sel-ace" : "sel") : ""
+                  }`}
+                  onClick={() => onScore(active, n)}
+                >
+                  {n}
+                </button>
+              );
+            })}
+          </div>
+
+          <div className="focus-hint">
+            {holeComplete
+              ? "Everyone's in — tap Next for the next hole."
+              : "Tap a score — it jumps to the next player. Tap a name to pick."}
+          </div>
+        </div>
         <div className="scroll-tail" />
       </div>
 
@@ -1161,7 +1231,6 @@ function FinishedView({
    ============================================================ */
 function StatsView({
   playerStats,
-  formatVs,
   vsColor,
   onBack,
   confirmingDelete,
@@ -1169,17 +1238,24 @@ function StatsView({
   onDeletePlayer,
   onDeleteAll,
 }) {
-  const names = Object.keys(playerStats).sort(
-    (a, b) => playerStats[b].rounds.length - playerStats[a].rounds.length
-  );
-  const totalRounds = names.reduce(
-    (a, n) => a + playerStats[n].rounds.length,
-    0
-  );
-  const totalAces = names.reduce(
-    (a, n) => a + computePlayerStats(playerStats[n]).aces,
-    0
-  );
+  // rank by best round (vs par); players with no completed rounds go last
+  const enriched = Object.keys(playerStats).map((n) => ({
+    name: n,
+    s: computePlayerStats(playerStats[n]),
+  }));
+  enriched.sort((a, b) => {
+    const aHas = a.s.completedRounds > 0;
+    const bHas = b.s.completedRounds > 0;
+    if (aHas && bHas) return a.s.bestVs - b.s.bestVs;
+    if (aHas) return -1;
+    if (bHas) return 1;
+    return b.s.totalRounds - a.s.totalRounds;
+  });
+  const totalRounds = enriched.reduce((a, e) => a + e.s.totalRounds, 0);
+  const totalAces = enriched.reduce((a, e) => a + e.s.aces, 0);
+
+  const fmtVs = (v) => (v > 0 ? `+${v}` : v === 0 ? "E" : `${v}`);
+  const courseName = (id) => (id === "black" ? "Black" : "White");
 
   return (
     <div className="screen">
@@ -1187,48 +1263,51 @@ function StatsView({
         <button className="linkbtn" onClick={onBack}>
           ← HOME
         </button>
-        <span className="topbar-title font-display">YOUR STATS</span>
+        <span className="topbar-title font-display">RECORDS</span>
         <span className="topbar-spacer" />
       </header>
 
       <div className="scroll pad">
-        <p className="privacy-note tight">
-          🔒 This history lives only on this phone.
-        </p>
-
-        {names.length === 0 ? (
+        {enriched.length === 0 ? (
           <div className="empty">
-            <p className="empty-title font-display">NO STATS YET</p>
+            <p className="empty-title font-display">NO RECORDS YET</p>
             <p className="empty-sub">
-              Finish a round and it'll show up here — best scores, averages, and
-              aces, all saved on this device.
+              Finish a round and everyone shows up here — best rounds, averages,
+              worst days, and hole-in-ones. Bragging rights included.
             </p>
           </div>
         ) : (
           <>
-            <div className="stat-summary">
-              <div className="card mini-stat">
-                <span className="font-mono mini-num">{names.length}</span>
-                <span className="mini-label">PLAYERS</span>
-              </div>
-              <div className="card mini-stat">
-                <span className="font-mono mini-num">{totalRounds}</span>
-                <span className="mini-label">ROUNDS</span>
-              </div>
-              <div className="card mini-stat accent">
-                <span className="font-mono mini-num">{totalAces}</span>
-                <span className="mini-label">ACES</span>
-              </div>
-            </div>
+            <p className="records-intro">
+              <b>{enriched.length}</b> player
+              {enriched.length === 1 ? "" : "s"} · <b>{totalRounds}</b> round
+              {totalRounds === 1 ? "" : "s"} · <b>{totalAces}</b> hole-in-one
+              {totalAces === 1 ? "" : "s"} so far.
+            </p>
+            <p className="privacy-note tight">
+              🔒 All of this lives only on this phone.
+            </p>
 
-            {names.map((n) => {
-              const s = computePlayerStats(playerStats[n]);
+            {enriched.map((e, i) => {
+              const { name: n, s } = e;
               const confirming = confirmingDelete === n;
-              const hasRounds = s.completedRounds > 0;
+              const ranked = s.completedRounds > 0;
+              const rank = ranked ? i + 1 : null;
               return (
-                <div key={n} className="card stat-card">
-                  <div className="stat-card-head">
-                    <span className="stat-name font-display">{n}</span>
+                <section key={n} className="rec-card">
+                  <div className="rec-head">
+                    <div className="rec-id">
+                      {rank && (
+                        <span
+                          className={`rec-rank font-display ${
+                            rank === 1 ? "rec-rank-1" : ""
+                          }`}
+                        >
+                          {rank === 1 ? "👑" : `#${rank}`}
+                        </span>
+                      )}
+                      <span className="rec-name font-display">{n}</span>
+                    </div>
                     {!confirming ? (
                       <button
                         className="remove-x"
@@ -1254,81 +1333,76 @@ function StatsView({
                       </span>
                     )}
                   </div>
-                  <div className="stat-meta font-mono">
-                    {s.totalRounds} ROUND{s.totalRounds === 1 ? "" : "S"} PLAYED
-                  </div>
+                  <p className="rec-sub">
+                    {s.totalRounds} round{s.totalRounds === 1 ? "" : "s"} played
+                    {ranked ? ` · ${s.completedRounds} completed` : ""}
+                  </p>
 
-                  <div className="tile-grid">
-                    <div className="tile tile-best">
-                      <span className="tile-label font-mono">BEST ROUND</span>
-                      <span
-                        className="tile-num font-display"
-                        style={{ color: hasRounds ? vsColor(s.bestVs) : "var(--muted)" }}
-                      >
-                        {hasRounds ? formatVs(s.bestVs) : "—"}
-                      </span>
-                      <span className="tile-cap font-mono">
-                        {hasRounds ? `${s.best} strokes` : "no rounds yet"}
-                      </span>
+                  {ranked ? (
+                    <div className="rec-rows">
+                      <div className="rec-row">
+                        <span className="rec-label">
+                          Best round
+                          <span className="rec-cap">
+                            {s.best} strokes · {courseName(s.bestCourse)}
+                          </span>
+                        </span>
+                        <span
+                          className="rec-num font-display"
+                          style={{ color: vsColor(s.bestVs) }}
+                        >
+                          {fmtVs(s.bestVs)}
+                        </span>
+                      </div>
+
+                      <div className="rec-row">
+                        <span className="rec-label">
+                          Average
+                          <span className="rec-cap">vs par, every round</span>
+                        </span>
+                        <span className="rec-num font-display">
+                          {s.avg > 0 ? `+${s.avg}` : s.avg === 0 ? "E" : s.avg}
+                        </span>
+                      </div>
+
+                      <div className="rec-row">
+                        <span className="rec-label">
+                          Worst day
+                          <span className="rec-cap">
+                            {s.worst} strokes · {courseName(s.worstCourse)}
+                          </span>
+                        </span>
+                        <span
+                          className="rec-num font-display"
+                          style={{ color: vsColor(s.worstVs) }}
+                        >
+                          {fmtVs(s.worstVs)}
+                        </span>
+                      </div>
+
+                      <div className="rec-row rec-row-aces">
+                        <span className="rec-label">
+                          Hole-in-ones
+                          <span className="rec-cap">
+                            {s.aces === 0
+                              ? "still chasing the first"
+                              : s.aces === 1
+                              ? "one for the highlight reel"
+                              : "absolute menace"}
+                          </span>
+                        </span>
+                        <span className="rec-num font-display rec-num-aces">
+                          {s.aces}
+                        </span>
+                      </div>
                     </div>
-
-                    <div className="tile tile-worst">
-                      <span className="tile-label font-mono">PERSONAL WORST</span>
-                      <span
-                        className="tile-num font-display"
-                        style={{ color: hasRounds ? vsColor(s.worstVs) : "var(--muted)" }}
-                      >
-                        {hasRounds ? formatVs(s.worstVs) : "—"}
-                      </span>
-                      <span className="tile-cap font-mono">
-                        {hasRounds ? `${s.worst} strokes` : "no rounds yet"}
-                      </span>
-                    </div>
-
-                    <div className="tile tile-avg">
-                      <span className="tile-label font-mono">AVERAGE</span>
-                      <span className="tile-num font-display">
-                        {hasRounds
-                          ? (s.avg > 0 ? `+${s.avg}` : s.avg === 0 ? "E" : s.avg)
-                          : "—"}
-                      </span>
-                      <span className="tile-cap font-mono">
-                        {hasRounds ? "vs par / round" : "no rounds yet"}
-                      </span>
-                    </div>
-
-                    <div className="tile tile-aces">
-                      <span className="tile-label font-mono">HOLE-IN-ONES</span>
-                      <span className="tile-num font-display">{s.aces}</span>
-                      <span className="tile-cap font-mono">
-                        {s.aces === 0
-                          ? "still chasing one"
-                          : s.aces === 1
-                          ? "certified ace"
-                          : "ace machine 🔥"}
-                      </span>
-                    </div>
-                  </div>
-
-                  <div className="course-line font-mono">
-                    <span>
-                      BLACK{" "}
-                      <b>
-                        {s.byCourse.black.best != null
-                          ? s.byCourse.black.best
-                          : "—"}
-                      </b>
-                    </span>
-                    <span>
-                      WHITE{" "}
-                      <b>
-                        {s.byCourse.white.best != null
-                          ? s.byCourse.white.best
-                          : "—"}
-                      </b>
-                    </span>
-                  </div>
-                </div>
+                  ) : (
+                    <p className="rec-empty">
+                      No completed rounds yet — finish all 18 to land on the
+                      board.
+                    </p>
+                  )}
+                </section>
               );
             })}
 
@@ -1338,7 +1412,7 @@ function StatsView({
                   className="btn btn-ghost"
                   onClick={() => setConfirmingDelete("all")}
                 >
-                  Delete all stats
+                  Delete all records
                 </button>
               ) : (
                 <div className="confirm-row">
@@ -1510,17 +1584,41 @@ const STYLES = `
 @keyframes pop{from{opacity:.3;transform:translateY(3px);}to{opacity:1;transform:none;}}
 .hole-big{font-size:34px;line-height:.9;}
 .par-badge{font-size:12px;letter-spacing:.06em;color:var(--muted);border:1.5px solid var(--border);border-radius:6px;padding:3px 8px;}
+.hole-progress{margin-left:auto;font-size:11px;letter-spacing:.05em;color:var(--muted);}
 
 .score-scroll{padding:12px 16px 4px;}
-.player-card{padding:14px 14px 15px;margin-bottom:11px;transition:border-color .15s ease;}
-.player-card.needs-score{border-color:var(--border);} 
-.pc-head{display:flex;align-items:center;justify-content:space-between;}
-.pc-name{font-size:19px;font-weight:700;letter-spacing:.01em;}
-.pc-totals{display:flex;align-items:baseline;gap:9px;}
-.pc-total{font-size:22px;font-weight:700;}
-.pc-vs{font-size:14px;font-weight:700;}
-.pc-sub{font-size:11px;color:var(--muted);letter-spacing:.04em;margin:2px 0 11px;}
-.pc-flag{color:#B8860B;font-weight:700;}
+
+/* player selector strip */
+.psel-wrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:0 -16px 12px;padding:0 16px;}
+.psel{display:flex;gap:8px;min-width:min-content;}
+.pchip{flex:none;display:flex;flex-direction:column;align-items:center;gap:1px;
+  min-width:62px;padding:8px 10px;border-radius:12px;cursor:pointer;
+  border:2px solid var(--border);background:var(--surface);color:var(--ink-soft);
+  transition:transform .06s ease;}
+.pchip:active{transform:scale(.95);}
+.pchip-num{font-size:9px;color:var(--muted);letter-spacing:.05em;}
+.pchip-name{font-size:13px;font-weight:700;max-width:80px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.pchip-val{font-size:15px;font-weight:700;line-height:1;}
+.pchip-done{border-color:var(--border-strong);}
+.pchip-done .pchip-val{color:var(--green);}
+.pchip-active{background:var(--ink);border-color:var(--ink);color:var(--surface-2);transform:translateY(-1px);
+  box-shadow:0 3px 0 var(--flag);}
+.pchip-active .pchip-num{color:rgba(251,252,246,.6);}
+.pchip-active .pchip-val{color:var(--flag);}
+
+/* focused single-player card */
+.focus-card{background:var(--surface);border:2.5px solid var(--ink);border-radius:18px;
+  padding:16px 16px 14px;animation:pop .22s ease;}
+.focus-top{display:flex;align-items:center;justify-content:space-between;margin-bottom:2px;}
+.focus-eyebrow{font-size:10px;letter-spacing:.14em;color:var(--muted);}
+.focus-totals{display:flex;align-items:baseline;gap:9px;}
+.focus-total{font-size:20px;font-weight:700;}
+.focus-vs{font-size:15px;font-weight:700;}
+.focus-name{font-size:40px;line-height:.9;margin:2px 0 15px;}
+.focus-grid{gap:9px;}
+.focus-grid .score-btn{min-height:66px;font-size:26px;}
+.focus-hint{margin-top:12px;font-size:12px;color:var(--muted);line-height:1.4;text-align:center;}
+
 .score-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;}
 .score-btn{
   min-height:56px;border:2px solid var(--border-strong);border-radius:12px;
@@ -1621,35 +1719,30 @@ const STYLES = `
 .finish-row{display:flex;gap:10px;margin-bottom:10px;}
 .finish-row .btn{flex:1;}
 
-/* ---------- stats ---------- */
-.stat-summary{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:16px;}
-.mini-stat{display:flex;flex-direction:column;align-items:center;gap:2px;padding:15px 8px;margin:0;}
-.mini-stat.accent{background:var(--flag);border-color:var(--flag);color:var(--flag-ink);}
-.mini-num{font-family:'Bebas Neue',sans-serif;font-size:34px;line-height:.9;}
-.mini-label{font-size:9px;letter-spacing:.12em;font-family:'JetBrains Mono',monospace;opacity:.75;}
-.stat-card{padding:16px;}
-.stat-card-head{display:flex;align-items:center;justify-content:space-between;}
-.stat-name{font-size:29px;}
+/* ---------- stats / records ---------- */
+.records-intro{font-size:16px;line-height:1.5;color:var(--ink-soft);margin-bottom:4px;}
+.records-intro b{color:var(--ink);font-weight:700;}
 .inline-confirm{display:flex;gap:8px;}
-.stat-meta{font-size:10px;color:var(--muted);letter-spacing:.1em;margin:2px 0 13px;}
 
-.tile-grid{display:grid;grid-template-columns:1fr 1fr;gap:9px;}
-.tile{display:flex;flex-direction:column;align-items:center;gap:2px;
-  border:2px solid var(--border-strong);border-radius:13px;padding:14px 8px 11px;background:var(--surface-2);}
-.tile-best{background:#EAF4E7;}
-.tile-worst{background:#F8E9E4;}
-.tile-avg{background:var(--surface-2);}
-.tile-aces{background:var(--flag);border-color:var(--flag);}
-.tile-label{font-size:9px;letter-spacing:.11em;color:var(--muted);}
-.tile-aces .tile-label{color:var(--flag-ink);opacity:.8;}
-.tile-num{font-size:44px;line-height:.82;letter-spacing:.01em;}
-.tile-aces .tile-num{color:var(--flag-ink);}
-.tile-cap{font-size:9px;letter-spacing:.04em;color:var(--muted);text-align:center;}
-.tile-aces .tile-cap{color:var(--flag-ink);opacity:.85;}
+.rec-card{background:var(--surface);border:2px solid var(--border-strong);border-radius:18px;
+  padding:18px 18px 8px;margin-bottom:14px;}
+.rec-head{display:flex;align-items:center;justify-content:space-between;gap:10px;}
+.rec-id{display:flex;align-items:center;gap:10px;min-width:0;}
+.rec-rank{font-size:24px;line-height:1;color:var(--muted);flex:none;}
+.rec-rank-1{font-size:26px;}
+.rec-name{font-size:34px;line-height:.9;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.rec-sub{font-size:12px;color:var(--muted);letter-spacing:.02em;margin:3px 0 6px;}
 
-.course-line{display:flex;gap:10px;margin-top:11px;font-size:11px;letter-spacing:.06em;color:var(--muted);}
-.course-line span{flex:1;background:var(--surface-2);border:1.5px solid var(--border);border-radius:10px;padding:8px 11px;display:flex;justify-content:space-between;}
-.course-line b{color:var(--ink);font-size:15px;}
+.rec-rows{display:flex;flex-direction:column;}
+.rec-row{display:flex;align-items:center;justify-content:space-between;gap:14px;
+  padding:15px 0;border-top:1.5px solid var(--border);}
+.rec-label{display:flex;flex-direction:column;gap:3px;font-size:15px;font-weight:700;color:var(--ink);}
+.rec-cap{font-size:12px;font-weight:400;color:var(--muted);letter-spacing:.01em;}
+.rec-num{font-size:46px;line-height:.8;letter-spacing:.01em;flex:none;}
+.rec-row-aces{border-top:1.5px solid var(--border);}
+.rec-num-aces{color:#B8860B;}
+.rec-empty{font-size:13px;color:var(--muted);line-height:1.45;padding:10px 0 8px;border-top:1.5px solid var(--border);}
+
 .delete-all{margin-top:8px;}
 
 @media (prefers-reduced-motion: reduce){

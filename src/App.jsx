@@ -27,6 +27,9 @@ const COURSES = {
 const SCORE_OPTIONS = [1, 2, 3, 4, 5, 6, 7];
 const GAME_KEY = "oakley_putt_game_v2";
 const STATS_KEY = "oakley_putt_stats_v1";
+const DEMO_UNLOCK_KEY = "oakley_demo_unlocked_v1";
+const DEMO_LOCK_ENABLED = import.meta.env.VITE_DEMO_LOCK_ENABLED === "true";
+const DEMO_PASSWORD = import.meta.env.VITE_DEMO_PASSWORD || "OAKLEY2026";
 
 /* ---------- storage seam ----------
    Single place all persistence flows through. Backed by
@@ -139,6 +142,11 @@ export default function App() {
 
   // persistent stats
   const [playerStats, setPlayerStats] = useState({});
+
+  // lightweight demo gate (only enabled by Vercel env vars)
+  const [demoUnlocked, setDemoUnlocked] = useState(
+    () => !DEMO_LOCK_ENABLED || storage.get(DEMO_UNLOCK_KEY) === true
+  );
 
   // ui ephemeral
   const [newPlayerName, setNewPlayerName] = useState("");
@@ -486,6 +494,23 @@ export default function App() {
     setConfirmingDelete(null);
   };
 
+  const unlockDemo = (code) => {
+    if (!DEMO_LOCK_ENABLED) return true;
+    if (code.trim() !== DEMO_PASSWORD) return false;
+    storage.set(DEMO_UNLOCK_KEY, true);
+    setDemoUnlocked(true);
+    return true;
+  };
+
+  if (DEMO_LOCK_ENABLED && !demoUnlocked) {
+    return (
+      <div className="app-root">
+        <style>{STYLES}</style>
+        <DemoLockScreen onUnlock={unlockDemo} />
+      </div>
+    );
+  }
+
   if (!loaded)
     return (
       <div className="app-root">
@@ -594,6 +619,62 @@ export default function App() {
           onClose={() => setLeaderboardOpen(false)}
         />
       )}
+    </div>
+  );
+}
+
+/* ============================================================
+   DEMO LOCK
+   ============================================================ */
+function DemoLockScreen({ onUnlock }) {
+  const [code, setCode] = useState("");
+  const [error, setError] = useState(false);
+
+  const submit = (e) => {
+    e.preventDefault();
+    const ok = onUnlock(code);
+    setError(!ok);
+    if (!ok) setCode("");
+  };
+
+  return (
+    <div className="screen demo-screen">
+      <div className="demo-lock-shell pad">
+        <div className="demo-lock-card">
+          <p className="venue-kicker font-mono">PRIVATE DEMO</p>
+          <h1 className="demo-lock-title">Oakley Greens</h1>
+          <p className="demo-lock-sub">
+            Enter the demo code to preview the mobile scorecard.
+          </p>
+
+          <form className="demo-lock-form" onSubmit={submit}>
+            <input
+              className={`demo-code-input ${error ? "demo-error" : ""}`}
+              type="password"
+              autoComplete="off"
+              autoCapitalize="characters"
+              spellCheck="false"
+              placeholder="Demo code"
+              value={code}
+              onChange={(e) => {
+                setCode(e.target.value);
+                if (error) setError(false);
+              }}
+              aria-label="Demo code"
+            />
+            {error && (
+              <p className="demo-error-text">That code did not work. Try again.</p>
+            )}
+            <button className="btn btn-accent big" type="submit">
+              ENTER DEMO →
+            </button>
+          </form>
+
+          <p className="demo-lock-note">
+            Scores and stats still save only on this device once unlocked.
+          </p>
+        </div>
+      </div>
     </div>
   );
 }
@@ -1622,6 +1703,54 @@ const STYLES = `
 .topbar-course-white{background:var(--cream);color:var(--club);}
 .nav-pill{background:var(--surface);border:2px solid var(--border-strong);border-radius:999px;font-family:'JetBrains Mono',monospace;font-weight:700;font-size:12px;letter-spacing:.04em;color:var(--ink);padding:10px 14px;cursor:pointer;min-height:42px;box-shadow:0 3px 0 var(--border-strong);}
 .nav-pill:active{transform:translateY(2px);box-shadow:0 1px 0 var(--border-strong);}
+
+/* ---------- demo lock ---------- */
+.demo-screen{background:var(--deep-green);}
+.demo-lock-shell{
+  min-height:100dvh;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  background:
+    radial-gradient(circle at 20% 12%, rgba(226,190,101,.24), transparent 30%),
+    radial-gradient(circle at 90% 10%, rgba(122,158,90,.18), transparent 28%),
+    linear-gradient(180deg, var(--deep-green) 0%, var(--ink) 100%);
+}
+.demo-lock-card{
+  width:100%;
+  max-width:410px;
+  background:var(--surface);
+  border:2px solid var(--gold);
+  border-radius:26px;
+  padding:28px 22px 22px;
+  box-shadow:0 22px 55px rgba(5,24,16,.35);
+}
+.demo-lock-title{
+  font-family:var(--script-font);
+  font-size:48px;
+  line-height:.9;
+  color:var(--deep-green);
+  margin:4px 0 12px;
+}
+.demo-lock-sub{font-size:15px;line-height:1.45;color:var(--ink-soft);max-width:28ch;margin-bottom:18px;}
+.demo-lock-form{display:flex;flex-direction:column;gap:10px;}
+.demo-code-input{
+  width:100%;
+  border:2px solid var(--border-strong);
+  border-radius:14px;
+  background:var(--surface-2);
+  color:var(--ink);
+  font-family:'JetBrains Mono',monospace;
+  font-size:17px;
+  font-weight:700;
+  letter-spacing:.08em;
+  padding:15px 16px;
+  min-height:54px;
+}
+.demo-code-input:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px rgba(36,116,72,.14);}
+.demo-code-input.demo-error{border-color:var(--red);}
+.demo-error-text{font-size:13px;color:var(--red);font-weight:700;}
+.demo-lock-note{font-size:12px;line-height:1.45;color:var(--muted);text-align:center;margin-top:16px;}
 
 /* ---------- home ---------- */
 .home-head{position:relative;padding:calc(12px + env(safe-area-inset-top)) 0 4px;margin-bottom:20px;}

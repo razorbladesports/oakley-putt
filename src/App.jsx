@@ -10,6 +10,7 @@ import { useState, useEffect, useMemo, useRef } from 'react';
 const COURSES = {
   black: {
     id: 'black',
+    kind: 'course',
     name: 'Black Course',
     label: 'BLACK',
     pars: [2, 2, 3, 2, 2, 3, 3, 2, 2, 3, 2, 3, 2, 3, 3, 3, 3, 2],
@@ -17,14 +18,49 @@ const COURSES = {
   },
   white: {
     id: 'white',
+    kind: 'course',
     name: 'White Course',
     label: 'WHITE',
     pars: [2, 2, 3, 2, 2, 3, 2, 2, 2, 3, 3, 3, 2, 3, 2, 3, 2, 3],
     total: 44,
   },
+  hundred: {
+    id: 'hundred',
+    kind: 'challenge',
+    name: '100 Foot Challenge',
+    label: '100 FT',
+    pars: [3],
+    total: 3,
+    basePar: 3,
+  },
 };
 
+const REGULAR_COURSE_IDS = ["black", "white"];
+const DEFAULT_HUNDRED_ATTEMPTS = 3;
+const HUNDRED_PAR = 3;
 const SCORE_OPTIONS = [1, 2, 3, 4, 5, 6, 7];
+const HUNDRED_SCORE_OPTIONS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+const HUNDRED_ATTEMPT_PRESETS = [1, 3, 5, 10];
+
+const clampHundredAttempts = (value) => {
+  const n = Number.parseInt(value, 10);
+  if (!Number.isFinite(n)) return DEFAULT_HUNDRED_ATTEMPTS;
+  return Math.max(1, Math.min(20, n));
+};
+
+const buildCourse = (courseId, challengeAttempts = DEFAULT_HUNDRED_ATTEMPTS) => {
+  if (courseId !== "hundred") return COURSES[courseId] || null;
+  const attempts = clampHundredAttempts(challengeAttempts);
+  return {
+    ...COURSES.hundred,
+    pars: Array(attempts).fill(HUNDRED_PAR),
+    total: attempts * HUNDRED_PAR,
+    attempts,
+  };
+};
+
+const scoreOptionsForCourse = (course) =>
+  course?.id === "hundred" ? HUNDRED_SCORE_OPTIONS : SCORE_OPTIONS;
 const GAME_KEY = "oakley_putt_game_v2";
 const STATS_KEY = "oakley_putt_stats_v1";
 const DEMO_UNLOCK_KEY = "oakley_demo_unlocked_v1";
@@ -77,14 +113,30 @@ const sumOfArr = (arr) => arr.reduce((a, b) => a + (b || 0), 0);
 /* ---------- stats leaderboard helpers ---------- */
 const formatStatVs = (v) => (v > 0 ? `+${v}` : v === 0 ? "E" : `${v}`);
 
-// completed rounds for a profile matching the course filter ('all'|'black'|'white')
+// completed regular-course rounds for a profile matching the course filter ('all'|'black'|'white').
+// The 100 FT Challenge is intentionally excluded from the regular course board.
 function getFilteredRounds(profile, filter) {
   return profile.rounds.filter(
-    (r) => r.complete && (filter === "all" || r.course === filter)
+    (r) =>
+      r.complete &&
+      REGULAR_COURSE_IDS.includes(r.course) &&
+      (filter === "all" || r.course === filter)
   );
 }
 
-// one ranked row per player who has >=1 completed round for the filter
+function getHundredRounds(profile) {
+  return profile.rounds.filter((r) => r.complete && r.course === "hundred");
+}
+
+const avgOf = (values) => {
+  if (!values.length) return 0;
+  return Math.round((values.reduce((a, v) => a + v, 0) / values.length) * 10) / 10;
+};
+
+const fmt1 = (value) =>
+  Number.isInteger(value) ? String(value) : Number(value).toFixed(1);
+
+// one ranked row per player who has >=1 completed regular round for the filter
 function buildStatsLeaderboard(playerStats, filter) {
   const rows = [];
   Object.keys(playerStats).forEach((name) => {
@@ -96,8 +148,8 @@ function buildStatsLeaderboard(playerStats, filter) {
         bestR = r;
       }
     });
-    const avg = Math.round((rounds.reduce((a, r) => a + r.total, 0) / rounds.length) * 10) / 10;
-    const avgVs = Math.round((rounds.reduce((a, r) => a + r.vsPar, 0) / rounds.length) * 10) / 10;
+    const avg = avgOf(rounds.map((r) => r.total));
+    const avgVs = avgOf(rounds.map((r) => r.vsPar));
     const aces = rounds.reduce((a, r) => a + r.scores.filter((s) => s === 1).length, 0);
     rows.push({
       name,
@@ -120,6 +172,57 @@ function buildStatsLeaderboard(playerStats, filter) {
   return rows;
 }
 
+function buildHundredLeaderboard(playerStats) {
+  const rows = [];
+  Object.keys(playerStats).forEach((name) => {
+    const rounds = getHundredRounds(playerStats[name]);
+    if (!rounds.length) return;
+
+    const allScores = rounds.flatMap((r) => r.scores.filter((s) => s != null));
+    let bestR = rounds[0];
+    rounds.forEach((r) => {
+      const rAttempts = Math.max(1, r.scores.filter((s) => s != null).length);
+      const bestAttempts = Math.max(1, bestR.scores.filter((s) => s != null).length);
+      const rAvg = r.total / rAttempts;
+      const bestAvg = bestR.total / bestAttempts;
+      if (rAvg < bestAvg || (rAvg === bestAvg && r.total < bestR.total)) {
+        bestR = r;
+      }
+    });
+
+    const bestAttempts = Math.max(1, bestR.scores.filter((s) => s != null).length);
+    const bestAvg = Math.round((bestR.total / bestAttempts) * 10) / 10;
+    const attempts = allScores.length;
+    const avg = avgOf(allScores);
+    const aces = allScores.filter((s) => s === 1).length;
+    const bestSingle = Math.min(...allScores);
+
+    rows.push({
+      name,
+      best: bestAvg,
+      bestAvg,
+      bestTotal: bestR.total,
+      bestAttempts,
+      bestSingle,
+      avg,
+      avgVs: 0,
+      rounds: rounds.length,
+      attempts,
+      aces,
+    });
+  });
+
+  rows.sort(
+    (a, b) =>
+      a.bestAvg - b.bestAvg ||
+      a.bestTotal - b.bestTotal ||
+      a.avg - b.avg ||
+      b.attempts - a.attempts ||
+      a.name.localeCompare(b.name)
+  );
+  return rows;
+}
+
 /* ============================================================
    ROOT
    ============================================================ */
@@ -127,6 +230,7 @@ export default function App() {
   // active round
   const [view, setView] = useState("home");
   const [courseId, setCourseId] = useState(null);
+  const [challengeAttempts, setChallengeAttempts] = useState(DEFAULT_HUNDRED_ATTEMPTS);
   const [players, setPlayers] = useState([]);
   const [scores, setScores] = useState({});
   const [currentHole, setCurrentHole] = useState(0);
@@ -158,7 +262,9 @@ export default function App() {
   const [leaderboardOpen, setLeaderboardOpen] = useState(false);
   const [pendingAdvance, setPendingAdvance] = useState(null); // null | 'next' | 'finish'
 
-  const course = courseId ? COURSES[courseId] : null;
+  const course = courseId ? buildCourse(courseId, challengeAttempts) : null;
+  const roundHoleCount = course?.pars.length || 18;
+  const scoreOptions = scoreOptionsForCourse(course);
 
   /* ---------- load (hydrate once from storage on mount) ---------- */
   /* eslint-disable react-hooks/set-state-in-effect */
@@ -166,6 +272,7 @@ export default function App() {
     const data = storage.get(GAME_KEY);
     if (data && data.players && data.players.length > 0 && data.courseId) {
       setCourseId(data.courseId ?? null);
+      setChallengeAttempts(clampHundredAttempts(data.challengeAttempts ?? DEFAULT_HUNDRED_ATTEMPTS));
       setPlayers(data.players ?? []);
       setScores(data.scores ?? {});
       setCurrentHole(data.currentHole ?? 0);
@@ -195,8 +302,16 @@ export default function App() {
   /* ---------- persist ---------- */
   useEffect(() => {
     if (!loaded) return;
-    storage.set(GAME_KEY, { view, courseId, players, scores, currentHole, roundId });
-  }, [view, courseId, players, scores, currentHole, roundId, loaded]);
+    storage.set(GAME_KEY, {
+      view,
+      courseId,
+      challengeAttempts,
+      players,
+      scores,
+      currentHole,
+      roundId,
+    });
+  }, [view, courseId, challengeAttempts, players, scores, currentHole, roundId, loaded]);
 
   useEffect(() => {
     if (!statsLoaded) return;
@@ -215,7 +330,7 @@ export default function App() {
         const profile = next[p]
           ? { ...next[p], rounds: [...next[p].rounds] }
           : { displayName: p, rounds: [] };
-        const pScores = scores[p] || Array(18).fill(null);
+        const pScores = scores[p] || Array(course.pars.length).fill(null);
         const played = pScores.filter((s) => s !== null);
         const total = sumOfArr(pScores);
         const parPlayed = pScores.reduce(
@@ -225,12 +340,14 @@ export default function App() {
         const record = {
           roundId,
           course: course.id,
+          kind: course.kind,
+          attempts: course.id === "hundred" ? course.pars.length : undefined,
           date,
           total,
           vsPar: total - parPlayed,
           scores: [...pScores],
           coursePar: course.total,
-          complete: played.length === 18,
+          complete: played.length === course.pars.length,
         };
         profile.rounds = profile.rounds.filter((r) => r.roundId !== roundId);
         profile.rounds.push(record);
@@ -251,7 +368,7 @@ export default function App() {
   const totalForPlayer = (name) => sumOfArr(scores[name] || []);
   const parPlayedFor = (name) =>
     (scores[name] || []).reduce(
-      (a, s, i) => a + (s !== null ? course.pars[i] : 0),
+      (a, s, i) => a + (s !== null ? (course?.pars[i] || 0) : 0),
       0
     );
   const playedCountFor = (name) =>
@@ -262,15 +379,15 @@ export default function App() {
     v < 0 ? "var(--green)" : v > 0 ? "var(--red)" : "var(--ink)";
 
   const holeCompleteness = useMemo(() => {
-    if (!players.length) return Array(18).fill("empty");
-    return Array.from({ length: 18 }, (_, h) => {
+    if (!players.length) return Array(roundHoleCount).fill("empty");
+    return Array.from({ length: roundHoleCount }, (_, h) => {
       const vals = players.map((p) => (scores[p] || [])[h]);
       const scored = vals.filter((v) => v !== null && v !== undefined).length;
       if (scored === 0) return "empty";
       if (scored === players.length) return "full";
       return "partial";
     });
-  }, [players, scores]);
+  }, [players, scores, roundHoleCount]);
 
   const leaderboard = useMemo(() => {
     const rows = players.map((p) => ({
@@ -319,11 +436,30 @@ export default function App() {
   /* ---------- actions ---------- */
   const selectCourse = (id) => {
     setCourseId(id);
+    setChallengeAttempts(id === "hundred" ? DEFAULT_HUNDRED_ATTEMPTS : DEFAULT_HUNDRED_ATTEMPTS);
     setPlayers([]);
     setScores({});
     setCurrentHole(0);
     setRoundId(null);
     setView("players");
+  };
+
+  const updateChallengeAttempts = (value) => {
+    const attempts = clampHundredAttempts(value);
+    setChallengeAttempts(attempts);
+    setCurrentHole((h) => Math.min(h, attempts - 1));
+    if (courseId !== "hundred") return;
+    setScores((s) => {
+      const next = { ...s };
+      players.forEach((p) => {
+        const current = next[p] || [];
+        next[p] = Array.from(
+          { length: attempts },
+          (_, i) => current[i] ?? null
+        );
+      });
+      return next;
+    });
   };
 
   const addPlayer = (raw) => {
@@ -334,7 +470,7 @@ export default function App() {
       return;
     }
     setPlayers((p) => [...p, name]);
-    setScores((s) => ({ ...s, [name]: Array(18).fill(null) }));
+    setScores((s) => ({ ...s, [name]: Array(roundHoleCount).fill(null) }));
     setNewPlayerName("");
   };
 
@@ -371,7 +507,7 @@ export default function App() {
     const prev = (scores[name] || [])[currentHole];
     const erasing = prev === value;
     setScores((s) => {
-      const arr = [...(s[name] || Array(18).fill(null))];
+      const arr = [...(s[name] || Array(roundHoleCount).fill(null))];
       arr[currentHole] = arr[currentHole] === value ? null : value; // re-tap erases
       return { ...s, [name]: arr };
     });
@@ -389,7 +525,7 @@ export default function App() {
     }
     if (nextP) {
       setActivePlayer(nextP);
-    } else if (prev == null && currentHole < 17) {
+    } else if (prev == null && currentHole < roundHoleCount - 1) {
       // this entry just completed the hole -> auto-advance after a beat
       const target = currentHole + 1;
       advanceTimer.current = setTimeout(() => {
@@ -423,7 +559,7 @@ export default function App() {
   const goNext = () => {
     clearAdvanceTimer();
     setPendingAdvance(null);
-    if (currentHole >= 17) setView("finished");
+    if (currentHole >= roundHoleCount - 1) setView("finished");
     else {
       const h = currentHole + 1;
       setCurrentHole(h);
@@ -432,7 +568,7 @@ export default function App() {
   };
   const tryNext = () => {
     if (unscoredThisHole > 0 && pendingAdvance == null) {
-      setPendingAdvance(currentHole >= 17 ? "finish" : "next");
+      setPendingAdvance(currentHole >= roundHoleCount - 1 ? "finish" : "next");
       return;
     }
     goNext();
@@ -456,7 +592,7 @@ export default function App() {
 
   const playAgain = () => {
     const fresh = {};
-    players.forEach((p) => (fresh[p] = Array(18).fill(null)));
+    players.forEach((p) => (fresh[p] = Array(roundHoleCount).fill(null)));
     setScores(fresh);
     setCurrentHole(0);
     setActivePlayer(players[0] || null);
@@ -477,7 +613,23 @@ export default function App() {
   };
 
   const reviewRound = () => {
-    setCurrentHole(17);
+    setCurrentHole(roundHoleCount - 1);
+    setView("scoring");
+  };
+
+  const startHundredBonus = () => {
+    clearAdvanceTimer();
+    const fresh = {};
+    players.forEach((p) => (fresh[p] = Array(1).fill(null)));
+    setCourseId("hundred");
+    setChallengeAttempts(1);
+    setScores(fresh);
+    setCurrentHole(0);
+    setActivePlayer(players[0] || null);
+    setRoundId(generateRoundId());
+    setShowSavedPill(false);
+    setPendingAdvance(null);
+    setLeaderboardOpen(false);
     setView("scoring");
   };
 
@@ -496,7 +648,9 @@ export default function App() {
 
   const unlockDemo = (code) => {
     if (!DEMO_LOCK_ENABLED) return true;
-    if (code.trim() !== DEMO_PASSWORD) return false;
+    const entered = String(code || "").trim().toUpperCase();
+    const expected = String(DEMO_PASSWORD || "OAKLEY2026").trim().toUpperCase();
+    if (entered !== expected) return false;
     storage.set(DEMO_UNLOCK_KEY, true);
     setDemoUnlocked(true);
     return true;
@@ -527,6 +681,8 @@ export default function App() {
     players,
     scores,
     currentHole,
+    roundHoleCount,
+    scoreOptions,
     setScore,
     totalForPlayer,
     parPlayedFor,
@@ -566,6 +722,8 @@ export default function App() {
           onAdd={addPlayer}
           onRemove={removePlayer}
           suggestedPlayers={suggestedPlayers}
+          challengeAttempts={challengeAttempts}
+          onChallengeAttemptsChange={updateChallengeAttempts}
           onStart={startRound}
           onBack={() => setView("home")}
         />
@@ -596,6 +754,7 @@ export default function App() {
           showSavedPill={showSavedPill}
           onReview={reviewRound}
           onPlayAgain={playAgain}
+          onPlayHundredBonus={startHundredBonus}
           onNewGame={fullReset}
         />
       )}
@@ -613,6 +772,7 @@ export default function App() {
 
       {leaderboardOpen && (
         <LeaderboardSheet
+          course={course}
           leaderboard={leaderboard}
           formatVs={formatVs}
           vsColor={vsColor}
@@ -688,6 +848,7 @@ function HomeView({
   COURSES,
   players,
   currentHole,
+  roundHoleCount,
   holeCompleteness,
   onSelectCourse,
   onResume,
@@ -722,11 +883,11 @@ function HomeView({
               <div className="resume-top">
                 <span className="tag tag-onink">ROUND IN PROGRESS</span>
                 <span className="font-mono resume-hole">
-                  HOLE {currentHole + 1}
+                  {courseId === "hundred" ? "RUN" : "HOLE"} {currentHole + 1}
                 </span>
               </div>
               <div className="resume-course font-display">
-                {COURSES[courseId].label} COURSE
+                {courseId === "hundred" ? "100 FT CHALLENGE" : `${COURSES[courseId].label} COURSE`}
               </div>
               <div className="chips">
                 {players.map((p) => (
@@ -736,7 +897,7 @@ function HomeView({
                 ))}
               </div>
               <div className="resume-meta font-mono">
-                {done}/18 HOLES COMPLETE · {players.length} PLAYER
+                {done}/{roundHoleCount} {courseId === "hundred" ? "RUNS" : "HOLES"} COMPLETE · {players.length} PLAYER
                 {players.length > 1 ? "S" : ""}
               </div>
             </div>
@@ -794,6 +955,19 @@ function HomeView({
               </span>
             </button>
 
+            <button
+              className="course-card course-hundred"
+              onClick={() => onSelectCourse("hundred")}
+            >
+              <span className="cc-top">
+                <span className="font-display course-name">100 FT</span>
+                <span className="cc-arrow">→</span>
+              </span>
+              <span className="font-mono course-par">
+                LONG PUTT CHALLENGE · PICK YOUR RUNS
+              </span>
+            </button>
+
             <p className="section-eyebrow font-mono">HOW IT WORKS</p>
             <div className="how-grid">
               <div className="how-step">
@@ -848,6 +1022,8 @@ function PlayersView({
   onAdd,
   onRemove,
   suggestedPlayers,
+  challengeAttempts,
+  onChallengeAttemptsChange,
   onStart,
   onBack,
 }) {
@@ -860,7 +1036,15 @@ function PlayersView({
         </button>
         <span className="topbar-title font-display">WHO'S PLAYING?</span>
         {course ? (
-          <span className={`topbar-course font-mono ${course.id === "black" ? "topbar-course-black" : "topbar-course-white"}`}>
+          <span
+            className={`topbar-course font-mono ${
+              course.id === "black"
+                ? "topbar-course-black"
+                : course.id === "hundred"
+                ? "topbar-course-hundred"
+                : "topbar-course-white"
+            }`}
+          >
             {course.label}
           </span>
         ) : (
@@ -894,6 +1078,47 @@ function PlayersView({
             ADD
           </button>
         </div>
+
+        {course?.id === "hundred" && (
+          <div className="challenge-setup card">
+            <p className="section-eyebrow font-mono tight">100 FT CHALLENGE</p>
+            <div className="challenge-copy">
+              Pick how many times each player will take on the 100-foot hole.
+              Lowest running tally wins.
+            </div>
+            <div className="attempt-stepper">
+              <button
+                className="attempt-btn"
+                onClick={() => onChallengeAttemptsChange(challengeAttempts - 1)}
+                disabled={challengeAttempts <= 1}
+              >
+                −
+              </button>
+              <div className="attempt-count">
+                <span className="font-display">{challengeAttempts}</span>
+                <span className="font-mono">RUN{challengeAttempts === 1 ? "" : "S"} EACH</span>
+              </div>
+              <button
+                className="attempt-btn"
+                onClick={() => onChallengeAttemptsChange(challengeAttempts + 1)}
+                disabled={challengeAttempts >= 20}
+              >
+                +
+              </button>
+            </div>
+            <div className="attempt-presets">
+              {HUNDRED_ATTEMPT_PRESETS.map((n) => (
+                <button
+                  key={n}
+                  className={`preset-pill ${challengeAttempts === n ? "preset-active" : ""}`}
+                  onClick={() => onChallengeAttemptsChange(n)}
+                >
+                  {n}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
 
         {suggestedPlayers.length > 0 && (
           <div className="roster">
@@ -942,6 +1167,10 @@ function PlayersView({
         >
           {players.length === 0
             ? "ADD A PLAYER TO START"
+            : course?.id === "hundred"
+            ? `START 100 FT · ${players.length} PLAYER${
+                players.length > 1 ? "S" : ""
+              } · ${challengeAttempts} RUN${challengeAttempts === 1 ? "" : "S"}`
             : `START ROUND · ${players.length} PLAYER${
                 players.length > 1 ? "S" : ""
               }`}
@@ -959,6 +1188,8 @@ function ScoringView({
   players,
   scores,
   currentHole,
+  roundHoleCount,
+  scoreOptions,
   activePlayer,
   onSelectPlayer,
   onScore,
@@ -981,7 +1212,9 @@ function ScoringView({
 }) {
   const par = course.pars[currentHole];
   const leader = leaderboard[0];
-  const isLast = currentHole >= 17;
+  const isChallenge = course.id === "hundred";
+  const unitLabel = isChallenge ? "RUN" : "HOLE";
+  const isLast = currentHole >= roundHoleCount - 1;
   const scoredCount = players.length - unscoredThisHole;
 
   // resolve the focused player (fallback if active is stale)
@@ -1003,19 +1236,19 @@ function ScoringView({
           </button>
           <div
             className={`course-badge ${
-              course.id === "black" ? "badge-black" : "badge-white"
+              course.id === "black" ? "badge-black" : course.id === "hundred" ? "badge-hundred" : "badge-white"
             }`}
           >
             <span className="course-badge-name font-display">
-              {course.label} COURSE
+              {isChallenge ? "100 FT CHALLENGE" : `${course.label} COURSE`}
             </span>
             <span className="course-badge-sub font-mono">
-              Hole {currentHole + 1} of 18 · Par {par}
+              {unitLabel} {currentHole + 1} of {roundHoleCount} · Par {par}
             </span>
           </div>
         </div>
         <div className="hole-line" key={currentHole}>
-          <span className="font-display hole-big">HOLE {currentHole + 1}</span>
+          <span className="font-display hole-big">{unitLabel} {currentHole + 1}</span>
           <span className="par-badge font-mono">PAR {par}</span>
           <span className="hole-progress font-mono">
             {scoredCount}/{players.length} in
@@ -1068,7 +1301,7 @@ function ScoringView({
           <div className="focus-name font-display">{active}</div>
 
           <div className="score-grid focus-grid">
-            {SCORE_OPTIONS.map((n) => {
+            {scoreOptions.map((n) => {
               const selected = activeVal === n;
               return (
                 <button
@@ -1086,7 +1319,7 @@ function ScoringView({
 
           <div className="focus-hint">
             {holeComplete
-              ? "Everyone's in — tap Next for the next hole."
+              ? `Everyone's in — tap Next for the next ${isChallenge ? "run" : "hole"}.`
               : "Tap a score — it jumps to the next player. Tap a name to pick."}
           </div>
         </div>
@@ -1122,7 +1355,7 @@ function ScoringView({
           <div className="warn">
             <span className="warn-text">
               {unscoredThisHole} player{unscoredThisHole > 1 ? "s" : ""} still
-              need{unscoredThisHole > 1 ? "" : "s"} a score on this hole.
+              need{unscoredThisHole > 1 ? "" : "s"} a score on this {isChallenge ? "run" : "hole"}.
             </span>
             <div className="warn-actions">
               <button className="btn btn-ghost sm" onClick={onCancelAdvance}>
@@ -1147,7 +1380,7 @@ function ScoringView({
             className={`btn nav-next ${holeComplete ? "btn-accent" : "btn-ink"}`}
             onClick={onNext}
           >
-            {isLast ? "FINISH ROUND ★" : "NEXT →"}
+            {isLast ? (isChallenge ? "FINISH CHALLENGE ★" : "FINISH ROUND ★") : "NEXT →"}
           </button>
         </div>
 
@@ -1157,7 +1390,7 @@ function ScoringView({
               key={i}
               className={`dot dot-${c} ${i === currentHole ? "dot-current" : ""}`}
               onClick={() => onJump(i)}
-              aria-label={`Go to hole ${i + 1}`}
+              aria-label={`Go to ${isChallenge ? "run" : "hole"} ${i + 1}`}
             />
           ))}
         </div>
@@ -1169,7 +1402,8 @@ function ScoringView({
 /* ============================================================
    LIVE LEADERBOARD SHEET
    ============================================================ */
-function LeaderboardSheet({ leaderboard, formatVs, vsColor, onClose }) {
+function LeaderboardSheet({ course, leaderboard, formatVs, vsColor, onClose }) {
+  const unit = course?.id === "hundred" ? "runs" : "holes";
   return (
     <div className="sheet-scrim" onClick={onClose}>
       <div className="sheet" onClick={(e) => e.stopPropagation()}>
@@ -1187,7 +1421,7 @@ function LeaderboardSheet({ leaderboard, formatVs, vsColor, onClose }) {
               <span className="lb-id">
                 <span className="lb-name">{r.name}</span>
                 <span className="lb-thru font-mono">
-                  thru {r.played} · {r.total} strokes
+                  thru {r.played} {unit} · {r.total} strokes
                 </span>
               </span>
               <span
@@ -1211,6 +1445,7 @@ function FinishedView({
   course,
   players,
   scores,
+  roundHoleCount,
   leaderboard,
   totalForPlayer,
   formatVs,
@@ -1218,8 +1453,11 @@ function FinishedView({
   showSavedPill,
   onReview,
   onPlayAgain,
+  onPlayHundredBonus,
   onNewGame,
 }) {
+  const isChallenge = course.id === "hundred";
+  const unitLabel = isChallenge ? "RUN" : "HOLE";
   const best = leaderboard.length ? leaderboard[0].total : 0;
   const winners = leaderboard.filter((r) => r.total === best).map((r) => r.name);
   const rankStyle = (rank) =>
@@ -1229,13 +1467,13 @@ function FinishedView({
     <div className="screen">
       <div className="scroll pad">
         <header className="finish-head">
-          <span className="font-display finish-title">FINAL ROUND</span>
+          <span className="font-display finish-title">{isChallenge ? "100 FT FINAL" : "FINAL ROUND"}</span>
           {showSavedPill && <span className="saved-pill">✓ SAVED</span>}
         </header>
 
         <div className="card card-ink winner-card">
           <span className="tag tag-onink">
-            {winners.length > 1 ? "TIED" : "WINNER"}
+            {winners.length > 1 ? "TIED" : isChallenge ? "LOW TALLY" : "WINNER"}
           </span>
           <div className="winner-name font-display">{winners.join(" / ")}</div>
           <div className="winner-score font-mono">
@@ -1267,8 +1505,8 @@ function FinishedView({
           <table className="scorecard font-mono">
             <thead>
               <tr>
-                <th className="sc-name">HOLE</th>
-                {Array.from({ length: 18 }, (_, i) => (
+                <th className="sc-name">{unitLabel}</th>
+                {Array.from({ length: roundHoleCount }, (_, i) => (
                   <th key={i}>{i + 1}</th>
                 ))}
                 <th className="sc-tot">T</th>
@@ -1314,6 +1552,11 @@ function FinishedView({
             PLAY AGAIN
           </button>
         </div>
+        {!isChallenge && (
+          <button className="btn btn-gold big" onClick={onPlayHundredBonus}>
+            PLAY 100 FT BONUS →
+          </button>
+        )}
         <button className="btn btn-accent big" onClick={onNewGame}>
           NEW GAME ★
         </button>
@@ -1338,23 +1581,33 @@ function StatsView({
   const [manageOpen, setManageOpen] = useState(false);
 
   const allNames = Object.keys(playerStats);
-  const board = buildStatsLeaderboard(playerStats, courseFilter);
+  const showingHundred = courseFilter === "hundred";
+  const board = showingHundred
+    ? buildHundredLeaderboard(playerStats)
+    : buildStatsLeaderboard(playerStats, courseFilter);
 
   const totalPlayers = board.length;
   const totalRounds = board.reduce((a, r) => a + r.rounds, 0);
+  const totalAttempts = board.reduce((a, r) => a + (r.attempts || r.rounds), 0);
   const totalAces = board.reduce((a, r) => a + r.aces, 0);
+  const stripMiddleValue = showingHundred ? totalAttempts : totalRounds;
+  const stripMiddleLabel = showingHundred ? "ATTEMPTS" : "ROUNDS";
 
   const filterLabel =
     courseFilter === "black"
       ? "BLACK COURSE"
       : courseFilter === "white"
       ? "WHITE COURSE"
+      : showingHundred
+      ? "100 FT CHALLENGE"
       : "ALL COURSES";
   const filterWord =
     courseFilter === "black"
       ? "Black Course "
       : courseFilter === "white"
       ? "White Course "
+      : showingHundred
+      ? "100 Foot Challenge "
       : "";
 
   const podium = board.slice(0, 3);
@@ -1369,7 +1622,11 @@ function StatsView({
     .sort((a, b) => b.aces - a.aces || a.best - b.best);
   const mostRounds = board
     .slice()
-    .sort((a, b) => b.rounds - a.rounds || a.best - b.best);
+    .sort((a, b) =>
+      showingHundred
+        ? (b.attempts || 0) - (a.attempts || 0) || a.best - b.best
+        : b.rounds - a.rounds || a.best - b.best
+    );
 
   return (
     <div className="screen">
@@ -1400,6 +1657,7 @@ function StatsView({
                 ["all", "ALL"],
                 ["black", "BLACK"],
                 ["white", "WHITE"],
+                ["hundred", "100 FT"],
               ].map(([id, label]) => (
                 <button
                   key={id}
@@ -1419,7 +1677,7 @@ function StatsView({
                   NO {filterLabel} SCORES YET
                 </p>
                 <p className="empty-sub">
-                  Finish a {filterWord}round to unlock this leaderboard.
+                  Finish a {filterWord}{showingHundred ? "run" : "round"} to unlock this leaderboard.
                 </p>
               </div>
             ) : (
@@ -1434,9 +1692,9 @@ function StatsView({
                   <span className="strip-div" />
                   <div className="strip-cell">
                     <span className="strip-num font-display">
-                      {totalRounds}
+                      {stripMiddleValue}
                     </span>
-                    <span className="strip-lbl">ROUNDS</span>
+                    <span className="strip-lbl">{stripMiddleLabel}</span>
                   </div>
                   <span className="strip-div" />
                   <div className="strip-cell">
@@ -1452,23 +1710,27 @@ function StatsView({
                         <span className="podium-medal">{medalGlyph(i)}</span>
                         <span className="podium-name">{r.name}</span>
                         <span className="podium-best font-display">
-                          {r.best}
+                          {showingHundred ? fmt1(r.bestAvg) : r.best}
                         </span>
                         <span
                           className="podium-vs font-mono"
-                          style={{ color: vsColor(r.bestVs) }}
+                          style={{ color: showingHundred ? "var(--flag)" : vsColor(r.bestVs) }}
                         >
-                          {formatStatVs(r.bestVs)}
+                          {showingHundred ? "AVG" : formatStatVs(r.bestVs)}
                         </span>
                         <span className="podium-rounds font-mono">
-                          {r.rounds} RD{r.rounds === 1 ? "" : "S"}
+                          {showingHundred
+                            ? `${r.bestTotal}/${r.bestAttempts} BEST`
+                            : `${r.rounds} RD${r.rounds === 1 ? "" : "S"}`}
                         </span>
                       </div>
                     ))}
                   </div>
                 )}
 
-                <p className="board-heading font-mono">BEST SCORES · {filterLabel}</p>
+                <p className="board-heading font-mono">
+                  {showingHundred ? "BEST AVG PER ATTEMPT" : "BEST SCORES"} · {filterLabel}
+                </p>
                 <div className="leaderboard-list">
                   {board.map((r, i) => (
                     <div
@@ -1482,19 +1744,21 @@ function StatsView({
                         <div className="lb-line1">
                           <span className="lb-player">{r.name}</span>
                           <span className="lb-scorewrap">
-                            <span className="lb-best font-mono">{r.best}</span>
+                            <span className="lb-best font-mono">
+                              {showingHundred ? fmt1(r.bestAvg) : r.best}
+                            </span>
                             <span
                               className="stat-pill font-mono"
-                              style={{ color: vsColor(r.bestVs) }}
+                              style={{ color: showingHundred ? "var(--flag)" : vsColor(r.bestVs) }}
                             >
-                              {formatStatVs(r.bestVs)}
+                              {showingHundred ? "AVG" : formatStatVs(r.bestVs)}
                             </span>
                           </span>
                         </div>
                         <div className="lb-line2 font-mono">
-                          AVG {r.avg} · {r.rounds} ROUND
-                          {r.rounds === 1 ? "" : "S"} · {r.aces} ACE
-                          {r.aces === 1 ? "" : "S"}
+                          {showingHundred
+                            ? `BEST RUN ${r.bestTotal}/${r.bestAttempts} · ${r.attempts} ATTEMPT${r.attempts === 1 ? "" : "S"} · ${r.aces} ACE${r.aces === 1 ? "" : "S"}`
+                            : `AVG ${r.avg} · ${r.rounds} ROUND${r.rounds === 1 ? "" : "S"} · ${r.aces} ACE${r.aces === 1 ? "" : "S"}`}
                         </div>
                       </div>
                     </div>
@@ -1523,13 +1787,17 @@ function StatsView({
                   </div>
 
                   <div className="mini-board">
-                    <p className="mini-title font-display">MOST ROUNDS</p>
+                    <p className="mini-title font-display">
+                      {showingHundred ? "MOST ATTEMPTS" : "MOST ROUNDS"}
+                    </p>
                     {mostRounds.map((r) => (
                       <div key={r.name} className="mini-row">
                         <span className="mini-name">{r.name}</span>
                         <span className="mini-val font-mono">
-                          {r.rounds}
-                          <span className="mini-unit"> · avg {r.avg}</span>
+                          {showingHundred ? r.attempts : r.rounds}
+                          <span className="mini-unit">
+                            {showingHundred ? ` · avg ${fmt1(r.avg)}` : ` · avg ${r.avg}`}
+                          </span>
                         </span>
                       </div>
                     ))}
@@ -1687,6 +1955,7 @@ const STYLES = `
 .btn.sm{width:auto;padding:9px 13px;min-height:39px;font-size:12px;border-radius:12px;box-shadow:none;}
 .btn:disabled{opacity:.45;cursor:default;box-shadow:none;}
 .btn-accent{background:linear-gradient(180deg,var(--turf),var(--club-2));color:var(--cream);border-color:var(--ink);}
+.btn-gold{background:linear-gradient(180deg,var(--gold),var(--gold-soft));color:var(--ink);border-color:var(--ink);margin-bottom:10px;}
 .btn-ink{background:var(--club);color:var(--cream);border-color:var(--ink);}
 .btn-ghost{background:rgba(255,252,242,.55);border-color:var(--border);color:var(--ink-soft);box-shadow:none;text-transform:none;font-weight:700;letter-spacing:0;}
 .btn-danger{background:var(--red);color:#fff;border-color:var(--ink);}
@@ -1701,6 +1970,7 @@ const STYLES = `
 .topbar-course{border:2px solid var(--ink);border-radius:999px;padding:7px 10px;font-size:11px;font-weight:700;letter-spacing:.07em;min-width:64px;text-align:center;}
 .topbar-course-black{background:var(--club);color:var(--cream);}
 .topbar-course-white{background:var(--cream);color:var(--club);}
+.topbar-course-hundred{background:var(--gold);color:var(--ink);}
 .nav-pill{background:var(--surface);border:2px solid var(--border-strong);border-radius:999px;font-family:'JetBrains Mono',monospace;font-weight:700;font-size:12px;letter-spacing:.04em;color:var(--ink);padding:10px 14px;cursor:pointer;min-height:42px;box-shadow:0 3px 0 var(--border-strong);}
 .nav-pill:active{transform:translateY(2px);box-shadow:0 1px 0 var(--border-strong);}
 
@@ -1772,6 +2042,8 @@ const STYLES = `
 .course-black{background:linear-gradient(135deg,var(--club),#07170F);color:var(--cream);}
 .course-white{background:linear-gradient(135deg,var(--cream),var(--surface-3));color:var(--ink);}
 .course-white:after{border-color:rgba(11,44,28,.08);}
+.course-hundred{background:linear-gradient(135deg,var(--gold),var(--gold-soft));color:var(--ink);}
+.course-hundred:after{border-color:rgba(11,44,28,.12);}
 .cc-top{display:flex;align-items:center;justify-content:space-between;width:100%;position:relative;z-index:1;}
 .course-name{font-size:48px;line-height:.82;letter-spacing:-.04em;}
 .course-par{position:relative;z-index:1;font-size:11px;font-weight:700;letter-spacing:.08em;opacity:.78;}
@@ -1803,6 +2075,18 @@ const STYLES = `
 .text-input::placeholder{color:var(--muted);}
 .text-input:focus{outline:none;border-color:var(--turf);box-shadow:0 3px 0 var(--turf);}
 .add-btn{width:auto;padding:0 20px;}
+.challenge-setup{padding:16px;margin-bottom:16px;border-radius:22px;background:linear-gradient(135deg,rgba(255,252,242,.92),rgba(247,227,163,.55));}
+.section-eyebrow.tight{margin:0 0 8px;}
+.challenge-copy{font-size:14px;line-height:1.4;color:var(--ink-soft);font-weight:600;margin-bottom:13px;}
+.attempt-stepper{display:grid;grid-template-columns:54px 1fr 54px;gap:9px;align-items:center;margin-bottom:10px;}
+.attempt-btn{height:52px;border:2px solid var(--ink);border-radius:15px;background:var(--surface);color:var(--ink);font-family:'Archivo Black','Archivo',sans-serif;font-size:28px;line-height:1;cursor:pointer;box-shadow:0 3px 0 var(--ink);}
+.attempt-btn:disabled{opacity:.45;box-shadow:none;}
+.attempt-count{display:flex;align-items:center;justify-content:center;gap:9px;height:52px;border:2px solid var(--ink);border-radius:15px;background:var(--club);color:var(--cream);}
+.attempt-count .font-display{font-size:37px;line-height:.8;color:var(--gold);}
+.attempt-count .font-mono{font-size:11px;font-weight:700;letter-spacing:.06em;}
+.attempt-presets{display:grid;grid-template-columns:repeat(4,1fr);gap:7px;}
+.preset-pill{border:1.5px solid var(--border-strong);border-radius:999px;background:rgba(255,252,242,.72);color:var(--ink);font-family:'JetBrains Mono',monospace;font-weight:700;padding:8px 6px;cursor:pointer;}
+.preset-active{background:var(--gold);}
 .roster{margin-bottom:18px;}
 .player-list{list-style:none;display:flex;flex-direction:column;gap:9px;margin-top:6px;}
 .player-item{display:flex;align-items:center;gap:13px;background:var(--surface);border:2px solid var(--border-strong);border-radius:17px;padding:13px 15px;box-shadow:0 3px 0 var(--border-strong);}
@@ -1827,6 +2111,9 @@ const STYLES = `
 .badge-white{background:var(--cream);}
 .badge-white .course-badge-name{color:var(--club);}
 .badge-white .course-badge-sub{color:var(--muted);}
+.badge-hundred{background:linear-gradient(135deg,var(--gold),var(--gold-soft));border-color:var(--ink);}
+.badge-hundred .course-badge-name{color:var(--ink);}
+.badge-hundred .course-badge-sub{color:rgba(16,25,20,.7);}
 .hole-line{display:flex;align-items:center;gap:10px;animation:pop .28s ease;}
 @keyframes pop{from{opacity:.3;transform:translateY(3px);}to{opacity:1;transform:none;}}
 .hole-big{font-size:46px;line-height:.82;color:var(--club);}

@@ -179,43 +179,25 @@ function buildHundredLeaderboard(playerStats) {
     if (!rounds.length) return;
 
     const allScores = rounds.flatMap((r) => r.scores.filter((s) => s != null));
-    let bestR = rounds[0];
-    rounds.forEach((r) => {
-      const rAttempts = Math.max(1, r.scores.filter((s) => s != null).length);
-      const bestAttempts = Math.max(1, bestR.scores.filter((s) => s != null).length);
-      const rAvg = r.total / rAttempts;
-      const bestAvg = bestR.total / bestAttempts;
-      if (rAvg < bestAvg || (rAvg === bestAvg && r.total < bestR.total)) {
-        bestR = r;
-      }
-    });
+    if (!allScores.length) return;
 
-    const bestAttempts = Math.max(1, bestR.scores.filter((s) => s != null).length);
-    const bestAvg = Math.round((bestR.total / bestAttempts) * 10) / 10;
     const attempts = allScores.length;
     const avg = avgOf(allScores);
-    const aces = allScores.filter((s) => s === 1).length;
-    const bestSingle = Math.min(...allScores);
+    const bestEver = Math.min(...allScores);
 
     rows.push({
       name,
-      best: bestAvg,
-      bestAvg,
-      bestTotal: bestR.total,
-      bestAttempts,
-      bestSingle,
+      best: bestEver,
+      bestEver,
       avg,
-      avgVs: 0,
-      rounds: rounds.length,
       attempts,
-      aces,
+      rounds: rounds.length,
     });
   });
 
   rows.sort(
     (a, b) =>
-      a.bestAvg - b.bestAvg ||
-      a.bestTotal - b.bestTotal ||
+      a.bestEver - b.bestEver ||
       a.avg - b.avg ||
       b.attempts - a.attempts ||
       a.name.localeCompare(b.name)
@@ -617,22 +599,6 @@ export default function App() {
     setView("scoring");
   };
 
-  const startHundredBonus = () => {
-    clearAdvanceTimer();
-    const fresh = {};
-    players.forEach((p) => (fresh[p] = Array(1).fill(null)));
-    setCourseId("hundred");
-    setChallengeAttempts(1);
-    setScores(fresh);
-    setCurrentHole(0);
-    setActivePlayer(players[0] || null);
-    setRoundId(generateRoundId());
-    setShowSavedPill(false);
-    setPendingAdvance(null);
-    setLeaderboardOpen(false);
-    setView("scoring");
-  };
-
   const deletePlayerStats = (name) => {
     setPlayerStats((s) => {
       const n = { ...s };
@@ -754,7 +720,6 @@ export default function App() {
           showSavedPill={showSavedPill}
           onReview={reviewRound}
           onPlayAgain={playAgain}
-          onPlayHundredBonus={startHundredBonus}
           onNewGame={fullReset}
         />
       )}
@@ -1453,7 +1418,6 @@ function FinishedView({
   showSavedPill,
   onReview,
   onPlayAgain,
-  onPlayHundredBonus,
   onNewGame,
 }) {
   const isChallenge = course.id === "hundred";
@@ -1552,11 +1516,6 @@ function FinishedView({
             PLAY AGAIN
           </button>
         </div>
-        {!isChallenge && (
-          <button className="btn btn-gold big" onClick={onPlayHundredBonus}>
-            PLAY 100 FT BONUS →
-          </button>
-        )}
         <button className="btn btn-accent big" onClick={onNewGame}>
           NEW GAME ★
         </button>
@@ -1588,10 +1547,13 @@ function StatsView({
 
   const totalPlayers = board.length;
   const totalRounds = board.reduce((a, r) => a + r.rounds, 0);
-  const totalAttempts = board.reduce((a, r) => a + (r.attempts || r.rounds), 0);
-  const totalAces = board.reduce((a, r) => a + r.aces, 0);
+  const totalAttempts = board.reduce((a, r) => a + (r.attempts || 0), 0);
+  const totalAces = showingHundred ? 0 : board.reduce((a, r) => a + r.aces, 0);
+  const bestHundredScore = showingHundred && board.length ? Math.min(...board.map((r) => r.bestEver)) : null;
   const stripMiddleValue = showingHundred ? totalAttempts : totalRounds;
   const stripMiddleLabel = showingHundred ? "ATTEMPTS" : "ROUNDS";
+  const stripThirdValue = showingHundred ? bestHundredScore : totalAces;
+  const stripThirdLabel = showingHundred ? "BEST" : "ACES";
 
   const filterLabel =
     courseFilter === "black"
@@ -1616,17 +1578,17 @@ function StatsView({
   const medalGlyph = (i) =>
     i === 0 ? "🥇" : i === 1 ? "🥈" : i === 2 ? "🥉" : `#${i + 1}`;
 
-  const aceKings = board
-    .filter((r) => r.aces > 0)
-    .slice()
-    .sort((a, b) => b.aces - a.aces || a.best - b.best);
-  const mostRounds = board
-    .slice()
-    .sort((a, b) =>
-      showingHundred
-        ? (b.attempts || 0) - (a.attempts || 0) || a.best - b.best
-        : b.rounds - a.rounds || a.best - b.best
-    );
+  const aceKings = showingHundred
+    ? []
+    : board
+        .filter((r) => r.aces > 0)
+        .slice()
+        .sort((a, b) => b.aces - a.aces || a.best - b.best);
+  const mostRounds = showingHundred
+    ? []
+    : board
+        .slice()
+        .sort((a, b) => b.rounds - a.rounds || a.best - b.best);
 
   return (
     <div className="screen">
@@ -1698,8 +1660,10 @@ function StatsView({
                   </div>
                   <span className="strip-div" />
                   <div className="strip-cell">
-                    <span className="strip-num font-display">{totalAces}</span>
-                    <span className="strip-lbl">ACES</span>
+                    <span className="strip-num font-display">
+                      {showingHundred ? stripThirdValue : totalAces}
+                    </span>
+                    <span className="strip-lbl">{stripThirdLabel}</span>
                   </div>
                 </div>
 
@@ -1710,17 +1674,17 @@ function StatsView({
                         <span className="podium-medal">{medalGlyph(i)}</span>
                         <span className="podium-name">{r.name}</span>
                         <span className="podium-best font-display">
-                          {showingHundred ? fmt1(r.bestAvg) : r.best}
+                          {showingHundred ? r.bestEver : r.best}
                         </span>
                         <span
                           className="podium-vs font-mono"
                           style={{ color: showingHundred ? "var(--flag)" : vsColor(r.bestVs) }}
                         >
-                          {showingHundred ? "AVG" : formatStatVs(r.bestVs)}
+                          {showingHundred ? "BEST" : formatStatVs(r.bestVs)}
                         </span>
                         <span className="podium-rounds font-mono">
                           {showingHundred
-                            ? `${r.bestTotal}/${r.bestAttempts} BEST`
+                            ? `${r.attempts} ATTEMPT${r.attempts === 1 ? "" : "S"}`
                             : `${r.rounds} RD${r.rounds === 1 ? "" : "S"}`}
                         </span>
                       </div>
@@ -1729,7 +1693,7 @@ function StatsView({
                 )}
 
                 <p className="board-heading font-mono">
-                  {showingHundred ? "BEST AVG PER ATTEMPT" : "BEST SCORES"} · {filterLabel}
+                  {showingHundred ? "100 FT RECORDS" : "BEST SCORES"} · {filterLabel}
                 </p>
                 <div className="leaderboard-list">
                   {board.map((r, i) => (
@@ -1745,19 +1709,19 @@ function StatsView({
                           <span className="lb-player">{r.name}</span>
                           <span className="lb-scorewrap">
                             <span className="lb-best font-mono">
-                              {showingHundred ? fmt1(r.bestAvg) : r.best}
+                              {showingHundred ? r.bestEver : r.best}
                             </span>
                             <span
                               className="stat-pill font-mono"
                               style={{ color: showingHundred ? "var(--flag)" : vsColor(r.bestVs) }}
                             >
-                              {showingHundred ? "AVG" : formatStatVs(r.bestVs)}
+                              {showingHundred ? "BEST" : formatStatVs(r.bestVs)}
                             </span>
                           </span>
                         </div>
                         <div className="lb-line2 font-mono">
                           {showingHundred
-                            ? `BEST RUN ${r.bestTotal}/${r.bestAttempts} · ${r.attempts} ATTEMPT${r.attempts === 1 ? "" : "S"} · ${r.aces} ACE${r.aces === 1 ? "" : "S"}`
+                            ? `AVG ${fmt1(r.avg)} · ${r.attempts} ATTEMPT${r.attempts === 1 ? "" : "S"}`
                             : `AVG ${r.avg} · ${r.rounds} ROUND${r.rounds === 1 ? "" : "S"} · ${r.aces} ACE${r.aces === 1 ? "" : "S"}`}
                         </div>
                       </div>
@@ -1765,9 +1729,10 @@ function StatsView({
                   ))}
                 </div>
 
-                <div className="mini-boards">
-                  <div className="mini-board">
-                    <p className="mini-title font-display">ACE LEADERS</p>
+                {!showingHundred && (
+                  <div className="mini-boards">
+                    <div className="mini-board">
+                      <p className="mini-title font-display">ACE LEADERS</p>
                     {aceKings.length ? (
                       aceKings.map((r) => (
                         <div key={r.name} className="mini-row">
@@ -1786,23 +1751,20 @@ function StatsView({
                     )}
                   </div>
 
-                  <div className="mini-board">
-                    <p className="mini-title font-display">
-                      {showingHundred ? "MOST ATTEMPTS" : "MOST ROUNDS"}
-                    </p>
-                    {mostRounds.map((r) => (
-                      <div key={r.name} className="mini-row">
-                        <span className="mini-name">{r.name}</span>
-                        <span className="mini-val font-mono">
-                          {showingHundred ? r.attempts : r.rounds}
-                          <span className="mini-unit">
-                            {showingHundred ? ` · avg ${fmt1(r.avg)}` : ` · avg ${r.avg}`}
+                    <div className="mini-board">
+                      <p className="mini-title font-display">MOST ROUNDS</p>
+                      {mostRounds.map((r) => (
+                        <div key={r.name} className="mini-row">
+                          <span className="mini-name">{r.name}</span>
+                          <span className="mini-val font-mono">
+                            {r.rounds}
+                            <span className="mini-unit"> · avg {r.avg}</span>
                           </span>
-                        </span>
-                      </div>
-                    ))}
+                        </div>
+                      ))}
+                    </div>
                   </div>
-                </div>
+                )}
               </>
             )}
 
